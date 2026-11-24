@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#9B7BC4">
+<title>Жизнь</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Жизнь <span style="font-weight:400;color:#857B93">· Финансы</span></div>
+  <div class="month" id="monthBar">
+    <button class="ghost" id="mPrev" aria-label="Предыдущий месяц">‹</button>
+    <span id="mLabel"></span>
+    <button class="ghost" id="mNext" aria-label="Следующий месяц">›</button>
+  </div>
+</header>
+<main id="view"></main>
+<nav class="tabs">
+  <button data-tab="overview" class="on"><span>◉</span>Обзор</button>
+  <button data-tab="history"><span>☰</span>История</button>
+  <button data-tab="add" class="plus" aria-label="Новая операция">+</button>
+  <button data-tab="budget"><span>▤</span>Бюджет</button>
+  <button data-tab="more"><span>⋯</span>Ещё</button>
+</nav>
+<div class="toast" id="toast"></div>
+<script src="defaults.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
