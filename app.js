@@ -279,19 +279,62 @@ async function addPocketMoves(moves, comment) {
 }
 
 // ---------- Проценты по депозиту ----------
-// Приблизительно: остаток × ставка / 12. Банки считают по-разному (по дням, минимальному остатку) — точная сумма та, что пришла.
-const interestMonthly = (a, bal) => (+a.rate > 0 && bal > 0) ? r2(bal * a.rate / 100 / 12) : 0;
+// Номинальная ставка — «на бумаге», по ней считается начисление (ставка / 12 в месяц).
+// Эффективная (ГЭСВ) — с учётом капитализации: (1 + ном/12)^12 − 1. Если указана одна — вторая рассчитывается.
+// Приблизительно: банки считают по-разному (по дням, минимальному остатку) — точная сумма та, что пришла.
+const DEP_TYPES = ['Несрочный', 'Срочный', 'Сберегательный', 'Другое'];
+const capOn = a => a.capitalize !== false;
+function nominalRate(a) {
+  if (+a.rate > 0) return +a.rate;
+  if (+a.rateEff > 0) return capOn(a) ? 12 * (Math.pow(1 + a.rateEff / 100, 1 / 12) - 1) * 100 : +a.rateEff;
+  return 0;
+}
+function effectiveRate(a) {
+  if (+a.rateEff > 0) return +a.rateEff;
+  const n = nominalRate(a); return n ? (capOn(a) ? (Math.pow(1 + n / 1200, 12) - 1) * 100 : n) : 0;
+}
+const fmtPct = x => (+x.toFixed(2)).toLocaleString('ru-RU') + '%';
+function addMonthsIso(s, m) { const d = dParse(s), day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + m); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return dIso(d); }
+const depEnd = a => a.openDate && +a.termMonths > 0 ? addMonthsIso(a.openDate, +a.termMonths) : '';
+const interestMonthly = (a, bal) => { const n = nominalRate(a); return (n > 0 && bal > 0) ? r2(bal * n / 100 / 12) : 0; };
 function projectDeposit(a, bal, months) {
-  const r = (+a.rate || 0) / 100 / 12; if (!(bal > 0) || !r) return r2(bal || 0);
-  return r2(a.capitalize !== false ? bal * Math.pow(1 + r, months) : bal + bal * r * months);
+  const r = nominalRate(a) / 100 / 12; if (!(bal > 0) || !r || !(months > 0)) return r2(bal || 0);
+  return r2(capOn(a) ? bal * Math.pow(1 + r, months) : bal + bal * r * months);
+}
+// Блок настроек депозита у накопительного счёта
+function depositBlock(a, i, bal) {
+  const c = accCur(a), n = nominalRate(a), e = effectiveRate(a), end = depEnd(a), t = today();
+  const derived = [];
+  if (!(+a.rate > 0) && n) derived.push(`номинальная ≈ ${fmtPct(n)} (рассчитана)`);
+  if (!(+a.rateEff > 0) && e) derived.push(`эффективная ≈ ${fmtPct(e)} (рассчитана${capOn(a) ? ' при ежемесячной капитализации' : ''})`);
+  const check = +a.rate > 0 && +a.rateEff > 0 && capOn(a) ? Math.abs((Math.pow(1 + a.rate / 1200, 12) - 1) * 100 - a.rateEff) : 0;
+  const left = end ? Math.max(0, dDiff(end, t)) : 0, monthsLeft = end ? Math.max(0, Math.round(dDiff(end, t) / 30.44)) : 0;
+  return `<div style="background:var(--green);border-radius:12px;padding:8px 10px;margin-top:6px">
+    <b style="font-size:13px">Депозит</b>
+    <div class="grid2"><div><label class="f">Тип</label><select class="in" data-acc="${i}" data-k="depType"><option value="">—</option>${DEP_TYPES.map(x => `<option ${x === a.depType ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+      <div><label class="f">День начисления</label><input class="in" data-acc="${i}" data-k="payDay" inputmode="numeric" value="${a.payDay || ''}" placeholder="1–31"></div></div>
+    <div class="grid2"><div><label class="f">Номинальная ставка, %</label><input class="in" data-acc="${i}" data-k="rate" inputmode="decimal" value="${a.rate || ''}" placeholder="например, 14"></div>
+      <div><label class="f">Эффективная (ГЭСВ), %</label><input class="in" data-acc="${i}" data-k="rateEff" inputmode="decimal" value="${a.rateEff || ''}" placeholder="например, 14,93"></div></div>
+    <div class="grid2"><div><label class="f">Дата открытия</label><input class="in" type="date" data-acc="${i}" data-k="openDate" value="${a.openDate || ''}"></div>
+      <div><label class="f">Срок, месяцев</label><input class="in" data-acc="${i}" data-k="termMonths" inputmode="numeric" value="${a.termMonths || ''}" placeholder="пусто = бессрочный"></div></div>
+    <label class="f"><input type="checkbox" data-acc="${i}" data-k="capitalize" ${capOn(a) ? 'checked' : ''}> проценты прибавляются к вкладу (капитализация)</label>
+    ${derived.length ? `<div class="muted">${derived.join(' · ')}</div>` : ''}
+    ${check > 0.3 ? `<div class="err">Ставки не сходятся: при номинальной ${fmtPct(+a.rate)} и ежемесячной капитализации эффективная ≈ ${fmtPct((Math.pow(1 + a.rate / 1200, 12) - 1) * 100)}. Проверь в договоре или в Kaspi.</div>` : ''}
+    ${end ? `<div class="muted">Окончание: <b>${end.split('-').reverse().join('.')}</b>${end >= t ? ` · осталось ${left} дн.` : ' · срок закончился'}</div>` : (a.openDate ? '<div class="muted">Бессрочный (срок не указан)</div>' : '')}
+    ${n > 0 ? `<div class="muted">≈ +${fmt(interestMonthly(a, bal), c)} в месяц${end && end >= t && monthsLeft ? ` · к окончанию срока ≈ ${fmt(projectDeposit(a, bal, monthsLeft), c)}` : ''}${end && monthsLeft < 12 ? ' · дальше — по условиям продления' : ` · через 12 мес ≈ ${fmt(projectDeposit(a, bal, 12), c)}`} (без пополнений, приблизительно)</div>` : ''}
+    <details><summary class="muted" style="font-weight:600">Номинальная и эффективная — в чём разница?</summary><div class="muted">
+      <p style="margin:4px 0"><b>Номинальная</b> — ставка «на бумаге». По ней банк начисляет проценты: в месяц ≈ остаток × ставка / 12.</p>
+      <p style="margin:4px 0"><b>Эффективная (ГЭСВ)</b> — реальная доходность за год с учётом того, что проценты прибавляются к вкладу и тоже приносят проценты. Поэтому она чуть выше номинальной.</p>
+      <p style="margin:4px 0">Обе ставки есть в договоре и в приложении банка. Впиши хотя бы одну — вторую приложение рассчитает. Ставки меняются — сверяй время от времени.</p>
+    </div></details></div>`;
 }
 // Ожидаемые проценты как «поступления» в календаре платежей (не редактируются — считаются из счёта)
 function interestPayments() {
   const b = balances();
-  return S.cfg.accounts.filter(a => a.savings && +a.rate > 0 && !isMetal(accCur(a))).map(a => ({
+  return S.cfg.accounts.filter(a => a.savings && nominalRate(a) > 0 && !isMetal(accCur(a))).map(a => ({
     id: 'int:' + a.name, name: 'Проценты: ' + a.name, kind: 'in', auto: true, toSavings: true,
     amount: r2(toBase(interestMonthly(a, b[a.name]), accCur(a))), account: a.name, cat: 'Банк', sub: 'Проценты по депозиту', person: '',
-    freq: 'month', day: +a.payDay || 1, start: S.cfg.startDate, end: '', active: true,
+    freq: 'month', day: +a.payDay || 1, start: S.cfg.startDate, end: depEnd(a), active: true,
   }));
 }
 const allPayments = () => [...payments(), ...interestPayments()];
@@ -394,6 +437,7 @@ function renderOverview() {
   const now = balances();
   S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && a.fact !== undefined && r2(+a.fact) !== r2(now[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${fmt(+a.fact, accCur(a))}, по учёту ${fmt(now[a.name], accCur(a))} — найди пропущенную операцию или внеси «Корректировку»`]));
   if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`]);
+  S.cfg.accounts.filter(a => depEnd(a) && dDiff(depEnd(a), today()) >= 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`]));
   if (allPayments().length) {
     const pf = payForecast(), soon = payCalendar(today(), dAdd(today(), 3)).filter(r => r.p.kind === 'out' && r.status !== 'paid');
     pf.overdue.forEach(r => warns.push(['warn', `⚠ Просрочен платёж «${r.p.name}» (${dHuman(r.due)}) — ${money(r.left)}`]));
@@ -434,7 +478,7 @@ function renderOverview() {
 function accRow(a, v) {
   const c = accCur(a), r = Rates.get(c);
   const eq = (c !== baseCur() ? `<div class="sub" style="text-align:right">${r ? '≈ ' + money(v * r) : 'нет курса'}</div>` : '')
-    + (+a.rate > 0 && a.savings ? `<div class="sub pos" style="text-align:right">≈ +${fmt(interestMonthly(a, v), c)}/мес · ${String(a.rate).replace('.', ',')}%</div>` : '');
+    + (nominalRate(a) > 0 && a.savings ? `<div class="sub pos" style="text-align:right">≈ +${fmt(interestMonthly(a, v), c)}/мес · ${fmtPct(nominalRate(a))}${effectiveRate(a) ? ' (эфф. ' + fmtPct(effectiveRate(a)) + ')' : ''}${depEnd(a) ? ' · до ' + depEnd(a).split('-').reverse().join('.') : ''}</div>` : '');
   return `<div class="row"><span>${esc(a.name)}${a.savings || isMetal(c) ? ' <span class="sub">· накопления</span>' : ''}</span><div style="text-align:right;white-space:nowrap"><b class="${v < 0 ? 'neg' : ''}">${fmt(v, c)}</b>${eq}</div></div>`;
 }
 function catBar(c) {
@@ -779,10 +823,7 @@ function renderMore() {
     <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}${isMetal(accCur(a)) ? ', г' : ''}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
     <div><label class="f">Сейчас в банке (сверка)</label><input class="in" data-acc="${i}" data-k="fact" inputmode="numeric" value="${a.fact ?? ''}" placeholder="—"></div></div>
     <label class="f"><input type="checkbox" data-acc="${i}" data-k="savings" ${a.savings ? 'checked' : ''}> это накопления</label>
-    ${a.savings && !isMetal(accCur(a)) ? `<div class="grid2"><div><label class="f">Ставка, % годовых</label><input class="in" data-acc="${i}" data-k="rate" inputmode="decimal" value="${a.rate || ''}" placeholder="например, 14"></div>
-      <div><label class="f">День начисления</label><input class="in" data-acc="${i}" data-k="payDay" inputmode="numeric" value="${a.payDay || ''}" placeholder="1–31"></div></div>
-      <label class="f"><input type="checkbox" data-acc="${i}" data-k="capitalize" ${a.capitalize !== false ? 'checked' : ''}> проценты прибавляются к вкладу (капитализация)</label>
-      ${+a.rate > 0 ? `<div class="muted">≈ +${fmt(interestMonthly(a, b[a.name]), accCur(a))} в месяц · через 6 мес ≈ ${fmt(projectDeposit(a, b[a.name], 6), accCur(a))} · через 12 мес ≈ ${fmt(projectDeposit(a, b[a.name], 12), accCur(a))} (без пополнений, приблизительно)</div>` : ''}` : ''}
+    ${a.savings && !isMetal(accCur(a)) ? depositBlock(a, i, b[a.name]) : ''}
     <div class="grid2"><input class="in" data-acc="${i}" data-k="name" value="${esc(a.name)}"><button class="btn small light" data-delacc="${i}">Убрать счёт</button></div></div>`).join('')}
     <button class="btn small" id="addAcc">+ Счёт</button></div>
   <h2>Валюты и курсы</h2>
@@ -847,6 +888,8 @@ function renderMore() {
     if (k === 'savings') a.savings = inp.checked;
     else if (k === 'capitalize') a.capitalize = inp.checked;
     else if (k === 'payDay') a.payDay = Math.min(31, Math.max(0, Math.round(num(inp.value)))) || null;
+    else if (k === 'openDate' || k === 'depType') a[k] = inp.value || '';
+    else if (k === 'termMonths') a.termMonths = Math.max(0, Math.round(num(inp.value))) || null;
     else if (k === 'cur') {
       if (live().some(o => o.account === a.name || o.to === a.name)) { toast('По счёту уже есть операции — валюту не поменять. Создай новый счёт в нужной валюте'); return renderMore(); }
       a.cur = inp.value; if (isMetal(a.cur)) a.savings = true;
