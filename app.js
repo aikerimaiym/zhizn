@@ -8,7 +8,8 @@ const TYPES = [
   { t: 'Расход', sign: -1, grp: 'exp', person: false, to: false, hint: 'Трата — идёт в бюджет' },
   { t: 'Доход', sign: 1, grp: 'inc', person: false, to: false, hint: 'Свой доход: стипендия, зарплата, проекты' },
   { t: 'Помощь', sign: 1, grp: '', person: true, to: false, hint: 'Деньги от людей — не свой доход' },
-  { t: 'Перевод между счетами', sign: -1, grp: '', person: false, to: true, hint: 'Общий баланс не меняется' },
+  { t: 'Перевод между счетами', sign: -1, grp: '', person: false, to: true, hint: 'Между своими счетами в одной валюте. Общий баланс не меняется' },
+  { t: 'Обмен валюты', sign: -1, grp: '', person: false, to: true, fx: true, hint: 'Покупка или продажа валюты или золота: укажи, сколько отдала и сколько получила' },
   { t: 'Заём получен', sign: 1, grp: '', person: true, to: false, hint: 'Мне дали в долг' },
   { t: 'Заём выдан', sign: -1, grp: '', person: true, to: false, hint: 'Я дала в долг' },
   { t: 'Мне вернули долг', sign: 1, grp: '', person: true, to: false, hint: '' },
@@ -23,9 +24,29 @@ const DEVICE = (() => { try { let d = localStorage.getItem('zhizn-device'); if (
 function uid() { return (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)); }
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// ---------- Валюты ----------
+// code — код ISO (для металлов XAU/XAG), sym — значок, metal — счёт в граммах.
+const CURRENCIES = [
+  { code: 'KZT', sym: '₸', name: 'Тенге' }, { code: 'USD', sym: '$', name: 'Доллар США' }, { code: 'EUR', sym: '€', name: 'Евро' },
+  { code: 'RUB', sym: '₽', name: 'Рубль' }, { code: 'CNY', sym: '¥', name: 'Юань' }, { code: 'KGS', sym: 'сом', name: 'Кыргызский сом' },
+  { code: 'UZS', sym: 'сум', name: 'Узбекский сум' }, { code: 'TRY', sym: '₺', name: 'Турецкая лира' }, { code: 'GBP', sym: '£', name: 'Фунт' },
+  { code: 'AED', sym: 'AED', name: 'Дирхам ОАЭ' }, { code: 'KRW', sym: '₩', name: 'Вона' }, { code: 'JPY', sym: 'JP¥', name: 'Иена' },
+  { code: 'XAU', sym: 'г', name: 'Золото (граммы)', metal: true }, { code: 'XAG', sym: 'г', name: 'Серебро (граммы)', metal: true },
+];
+const CUR = Object.fromEntries(CURRENCIES.map(c => [c.code, c]));
+const baseCur = () => (S.cfg && S.cfg.base) || 'KZT';
+const accCur = a => (a && a.cur) || baseCur();                       // старые счета без валюты — в основной валюте
+const accByName = n => S.cfg.accounts.find(a => a.name === n);
+const curOf = name => accCur(accByName(name));
+const isMetal = code => !!(CUR[code] && CUR[code].metal);
 // Деньги: до 2 знаков после запятой (тиыны), целые — без «,00»
 const r2 = n => Math.round((+n || 0) * 100) / 100;
-const money = n => { const v = r2(n); return v.toLocaleString('ru-RU', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }) + ' ₸'; };
+function fmt(n, code) {
+  const v = r2(n), c = CUR[code] || { sym: code };
+  const s = v.toLocaleString('ru-RU', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 });
+  return c.metal ? `${s} г ${code === 'XAU' ? 'золота' : 'серебра'}` : `${s} ${c.sym}`;
+}
+const money = n => fmt(n, baseCur());                                   // суммы в основной валюте
 // Ввод чисел: понимает пробелы и запятую («1 234,56»)
 const num = s => { const v = parseFloat(String(s ?? '').replace(/\s/g, '').replace(',', '.')); return isFinite(v) ? r2(v) : 0; };
 const pct = x => (x === null || !isFinite(x)) ? '–' : Math.round(x * 100) + '%';
@@ -79,6 +100,47 @@ async function saveCfg() { S.cfg.updatedAt = Date.now(); await DB.set('cfg', S.c
 const lastAcc = { get() { try { return localStorage.getItem('zhizn-last-account'); } catch (e) { return null; } }, set(v) { try { localStorage.setItem('zhizn-last-account', v); } catch (e) {} } };
 const live = () => S.ops.filter(o => !o.deleted);
 
+// ---------- Курсы ----------
+// Курс = сколько основной валюты стоит 1 единица (1 $, 1 € … или 1 грамм металла).
+// Источник: Currency API (fawazahmed0, через jsDelivr), запасной — ExchangeRate-API (только валюты).
+// Ручной курс (cfg.rateManual) важнее автоматического. Автокурсы хранятся только на устройстве.
+const Rates = {
+  data: null, // { base, fetchedAt, date, src, values: { USD: 455.5, XAU: 53072, ... } }
+  async load() { this.data = (await DB.get('rates')) || null; },
+  auto(code) { return this.data && this.data.base === baseCur() ? this.data.values[code] : undefined; },
+  manual(code) { const m = (S.cfg.rateManual || {})[code]; return m && +m.v > 0 ? +m.v : undefined; },
+  get(code) { if (code === baseCur()) return 1; return this.manual(code) ?? this.auto(code); },
+  used() { return [...new Set(S.cfg.accounts.map(accCur))].filter(c => c !== baseCur()); },
+  stale() { return !this.data || this.data.base !== baseCur() || Date.now() - this.data.fetchedAt > 12 * 3600e3; },
+  async refresh() {
+    const b = baseCur().toLowerCase(), values = {};
+    let src = '', date = '';
+    try {
+      const urls = [`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${b}.json`, `https://latest.currency-api.pages.dev/v1/currencies/${b}.json`];
+      let j = null;
+      for (const u of urls) { try { const r = await fetch(u, { cache: 'no-cache' }); if (r.ok) { j = await r.json(); break; } } catch (e) {} }
+      if (!j) throw new Error('нет ответа');
+      const per = j[b]; date = j.date; src = 'Currency API';
+      for (const c of CURRENCIES) {
+        const x = per[c.code.toLowerCase()]; if (!(x > 0) || c.code === baseCur()) continue;
+        values[c.code] = c.metal ? (1 / x) / 31.1034768 : 1 / x;   // металлы: цена за тройскую унцию → за грамм
+      }
+    } catch (e) {
+      const r = await fetch(`https://open.er-api.com/v6/latest/${baseCur()}`);   // запасной источник (без металлов)
+      if (!r.ok) throw new Error('курсы недоступны');
+      const j = await r.json(); src = 'ExchangeRate-API'; date = (j.time_last_update_utc || '').slice(5, 16);
+      for (const c of CURRENCIES) { const x = j.rates && j.rates[c.code]; if (x > 0 && !c.metal && c.code !== baseCur()) values[c.code] = 1 / x; }
+    }
+    this.data = { base: baseCur(), fetchedAt: Date.now(), date, src, values };
+    await DB.set('rates', this.data);
+    return this.data;
+  },
+};
+// Сумма операции в основной валюте (для бюджета и итогов). Курс запоминается в операции при сохранении.
+function opBase(o) { const c = curOf(o.account); return c === baseCur() ? o.amount : o.amount * (o.rate || Rates.get(c) || 0); }
+// Остаток счёта (в его валюте) → в основной валюте по текущему курсу
+function toBase(v, code) { const r = Rates.get(code); return code === baseCur() ? v : (r ? v * r : 0); }
+
 // ---------- Проверка операции ----------
 function validate(o) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date || '')) return 'Укажи дату';
@@ -90,6 +152,8 @@ function validate(o) {
   if (T.grp === 'inc' && !S.cfg.inc.some(c => c.cat === o.cat && c.subs.includes(o.sub))) return 'Выбери категорию дохода';
   if (T.person && !o.person) return 'Выбери человека';
   if (T.to && (!S.cfg.accounts.some(a => a.name === o.to) || o.to === o.account)) return 'Выбери другой счёт-получатель';
+  if (T.to && !T.fx && curOf(o.account) !== curOf(o.to)) return 'Счета в разных валютах — используй «Обмен валюты»';
+  if (T.fx && !(o.amountTo > 0)) return 'Укажи, сколько получила';
   return '';
 }
 
@@ -101,11 +165,21 @@ function balances(uptoMonth) {
     if (uptoMonth && mkey(o.date) > uptoMonth) continue;
     const T = TYPE[o.type];
     if (b[o.account] !== undefined) b[o.account] += T.sign * o.amount;
-    if (T.to && b[o.to] !== undefined) b[o.to] += o.amount;
+    if (T.to && b[o.to] !== undefined) b[o.to] += T.fx ? o.amountTo : o.amount;
   }
-  return b;
+  return b;   // остатки в валюте каждого счёта
 }
-function sumType(type, month) { return live().filter(o => o.type === type && mkey(o.date) === month && !validate(o)).reduce((s, o) => s + o.amount, 0); }
+// Итоги по всем счетам в основной валюте: всего, накопления (включая металлы), свободно
+function totals(b) {
+  let total = 0, sav = 0, missing = [];
+  for (const a of S.cfg.accounts) {
+    const c = accCur(a), v = toBase(b[a.name], c);
+    if (c !== baseCur() && !Rates.get(c) && b[a.name]) missing.push(c);
+    total += v; if (a.savings || isMetal(c)) sav += v;
+  }
+  return { total, sav, free: total - sav, missing: [...new Set(missing)] };
+}
+function sumType(type, month) { return live().filter(o => o.type === type && mkey(o.date) === month && !validate(o)).reduce((s, o) => s + opBase(o), 0); }
 function planFor(month, cat, sub) {
   const p = S.cfg.plans.filter(x => x.month === month && x.cat === cat && x.sub === sub);
   if (p.length) return p.reduce((s, x) => s + (+x.amount || 0), 0);
@@ -114,7 +188,7 @@ function planFor(month, cat, sub) {
 }
 function budget(month) {
   const fact = {};
-  for (const o of live()) if (o.type === 'Расход' && mkey(o.date) === month && !validate(o)) { const k = o.cat + '|' + o.sub; fact[k] = (fact[k] || 0) + o.amount; }
+  for (const o of live()) if (o.type === 'Расход' && mkey(o.date) === month && !validate(o)) { const k = o.cat + '|' + o.sub; fact[k] = (fact[k] || 0) + opBase(o); }
   const cats = S.cfg.exp.map(c => {
     const subs = c.subs.map(s => { const plan = planFor(month, c.cat, s.name), f = fact[c.cat + '|' + s.name] || 0; return { name: s.name, oblig: s.oblig, plan, fact: f, diff: plan - f }; });
     const plan = subs.reduce((a, s) => a + s.plan, 0), f = subs.reduce((a, s) => a + s.fact, 0);
@@ -135,8 +209,7 @@ function render() {
 // ---------- Обзор ----------
 function renderOverview() {
   const m = S.month, b = balances(m);
-  const total = Object.values(b).reduce((a, x) => a + x, 0);
-  const sav = S.cfg.accounts.filter(a => a.savings).reduce((a, x) => a + b[x.name], 0);
+  const { total, sav, missing } = totals(b);
   const inc = sumType('Доход', m), help = sumType('Помощь', m), exp = sumType('Расход', m);
   const prevExp = sumType('Расход', mshift(m, -1));
   const bud = budget(m);
@@ -146,17 +219,19 @@ function renderOverview() {
   const warns = [];
   if (errs) warns.push(['warn', `⚠ Операций с ошибками: ${errs} — открой «Историю», они не в итогах`]);
   over.forEach(c => warns.push(['warn', `⚠ Перерасход: ${c.cat} — ${money(c.fact - c.plan)} сверх плана`]));
-  S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && r2(+a.fact) !== r2(balances()[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${money(+a.fact)}, по учёту ${money(balances()[a.name])} — найди пропущенную операцию или внеси «Корректировку»`]));
+  const now = balances();
+  S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && a.fact !== undefined && r2(+a.fact) !== r2(now[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${fmt(+a.fact, accCur(a))}, по учёту ${fmt(now[a.name], accCur(a))} — найди пропущенную операцию или внеси «Корректировку»`]));
+  if (missing.length) warns.push(['warn', `⚠ Нет курса для: ${missing.join(', ')} — эти счета не вошли в итоги. Обнови курсы: «Ещё → Валюты и курсы»`]);
   if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»']);
   if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»']);
   if (!warns.length) warns.push(['ok', '✓ Всё в порядке']);
   const topCats = bud.cats.filter(c => c.plan || c.fact).sort((a, b) => b.fact - a.fact);
-  const people = S.cfg.people.map(p => ({ p: p.name, v: live().filter(o => o.person === p.name && mkey(o.date) === m && !validate(o) && TYPE[o.type].sign > 0).reduce((s, o) => s + o.amount, 0) })).filter(x => x.v);
+  const people = S.cfg.people.map(p => ({ p: p.name, v: live().filter(o => o.person === p.name && mkey(o.date) === m && !validate(o) && TYPE[o.type].sign > 0).reduce((s, o) => s + opBase(o), 0) })).filter(x => x.v);
   $('#view').innerHTML = `
   <div class="cards">
     <div class="kpi blue"><div class="l">Всего денег</div><div class="v">${money(total)}</div><div class="s">на конец месяца</div></div>
     <div class="kpi lilac"><div class="l">Свободно</div><div class="v">${money(total - sav)}</div><div class="s">без накоплений · карманы — этап 2</div></div>
-    <div class="kpi green"><div class="l">Накопления</div><div class="v">${money(sav)}</div><div class="s">&nbsp;</div></div>
+    <div class="kpi green"><div class="l">Накопления</div><div class="v">${money(sav)}</div><div class="s">${S.cfg.accounts.some(a => isMetal(accCur(a))) ? 'вкл. металлы' : '&nbsp;'}</div></div>
     <div class="kpi powder"><div class="l">Сальдо месяца</div><div class="v ${saldo < 0 ? 'neg' : ''}">${money(saldo)}</div><div class="s">отложено ${inc + help ? pct(saldo / (inc + help)) : '–'}</div></div>
   </div>
   <h2>Месяц</h2>
@@ -170,8 +245,15 @@ function renderOverview() {
   <h2>Бюджет по категориям</h2>
   <div class="card">${topCats.length ? topCats.map(catBar).join('') : '<div class="row muted">Пока нет плана и расходов</div>'}</div>
   <h2>Счета</h2>
-  <div class="card">${S.cfg.accounts.map(a => `<div class="row"><span>${esc(a.name)}${a.savings ? ' <span class="sub">· накопления</span>' : ''}</span><b class="${b[a.name] < 0 ? 'neg' : ''}">${money(b[a.name])}</b></div>`).join('')}</div>
+  <div class="card">${S.cfg.accounts.map(a => accRow(a, b[a.name])).join('')}</div>
+  ${S.cfg.accounts.some(a => accCur(a) !== baseCur()) ? `<p class="muted">Счета в другой валюте и металлы пересчитаны в ${CUR[baseCur()].sym} по текущему курсу${Rates.data ? ' (' + esc(Rates.data.src) + ', ' + esc(Rates.data.date) + ')' : ''}.</p>` : ''}
   ${people.length ? `<h2>Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
+}
+// Строка счёта: остаток в его валюте, для чужой валюты — «≈ в основной»
+function accRow(a, v) {
+  const c = accCur(a), r = Rates.get(c);
+  const eq = c !== baseCur() ? `<div class="sub" style="text-align:right">${r ? '≈ ' + money(v * r) : 'нет курса'}</div>` : '';
+  return `<div class="row"><span>${esc(a.name)}${a.savings || isMetal(c) ? ' <span class="sub">· накопления</span>' : ''}</span><div style="text-align:right;white-space:nowrap"><b class="${v < 0 ? 'neg' : ''}">${fmt(v, c)}</b>${eq}</div></div>`;
 }
 function catBar(c) {
   const r = c.plan ? c.fact / c.plan : (c.fact ? 2 : 0);
@@ -195,7 +277,10 @@ function renderHistory() {
     const T = TYPE[o.type], err = validate(o);
     const sign = !T ? '' : T.to ? '⇄ ' : T.sign > 0 ? '+' : '−';
     const what = T && T.grp ? `${o.cat} · ${o.sub}` : (o.person || (T && T.to ? `${o.account} → ${o.to}` : o.type));
-    html += `<div class="row" data-id="${o.id}" style="cursor:pointer"><div><div class="t">${esc(what)}</div><div class="sub">${esc(o.type)} · ${esc(o.account)}${o.comment ? ' · ' + esc(o.comment) : ''}${err ? ' · <span class="neg">⚠ ' + esc(err) + '</span>' : ''}</div></div><b class="${T && !T.to ? (T.sign > 0 ? 'pos' : 'neg') : ''}">${sign}${money(o.amount)}</b></div>`;
+    const c = curOf(o.account);
+    const amt = T && T.fx ? `−${fmt(o.amount, c)}<br>+${fmt(o.amountTo, curOf(o.to))}` : sign + fmt(o.amount, c);
+    const eq = T && !T.to && c !== baseCur() ? `<div class="sub">≈ ${money(opBase(o))}</div>` : '';
+    html += `<div class="row" data-id="${o.id}" style="cursor:pointer"><div style="flex:1;min-width:0"><div class="t">${esc(what)}</div><div class="sub">${esc(o.type)} · ${esc(o.account)}${o.comment ? ' · ' + esc(o.comment) : ''}${err ? ' · <span class="neg">⚠ ' + esc(err) + '</span>' : ''}</div></div><div style="text-align:right;white-space:nowrap"><b class="${T && !T.to ? (T.sign > 0 ? 'pos' : 'neg') : ''}">${amt}</b>${eq}</div></div>`;
   }
   if (day) html += '</div>';
   $('#view').innerHTML = html;
@@ -204,7 +289,7 @@ function renderHistory() {
 }
 
 // ---------- Новая операция / правка ----------
-function newDraft() { return { type: 'Расход', date: today(), account: (S.cfg.accounts.some(a => a.name === lastAcc.get()) ? lastAcc.get() : S.cfg.accounts[0].name), cat: '', sub: '', amount: '', person: '', to: '', comment: '' }; }
+function newDraft() { return { type: 'Расход', date: today(), account: (S.cfg.accounts.some(a => a.name === lastAcc.get()) ? lastAcc.get() : S.cfg.accounts[0].name), cat: '', sub: '', amount: '', amountTo: '', rate: '', person: '', to: '', comment: '' }; }
 function renderAdd() {
   if (!S.draft) S.draft = newDraft();
   const d = S.draft, T = TYPE[d.type];
@@ -212,25 +297,39 @@ function renderAdd() {
   const subs = T.grp === 'exp' ? ((S.cfg.exp.find(c => c.cat === d.cat) || {}).subs || []).map(s => s.name) : T.grp === 'inc' ? ((S.cfg.inc.find(c => c.cat === d.cat) || {}).subs || []) : [];
   const freq = {}; live().forEach(o => { if (o.type === d.type && o.cat) freq[o.cat] = (freq[o.cat] || 0) + 1; });
   cats.sort((a, b) => (freq[b] || 0) - (freq[a] || 0));
-  const accOpts = S.cfg.accounts.map(a => `<option ${a.name === d.account ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  const accOpts = S.cfg.accounts.map(a => `<option value="${esc(a.name)}" ${a.name === d.account ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('');
+  const cFrom = curOf(d.account), cTo = d.to ? curOf(d.to) : '';
+  const symFrom = (CUR[cFrom] || {}).sym || cFrom;
+  // Курс для операции в чужой валюте: сохранённый в операции → ручной/автоматический
+  if (!T.to && cFrom !== baseCur() && !d.rate) d.rate = Rates.get(cFrom) ? String(+Rates.get(cFrom).toFixed(4)) : '';
+  const rateRow = !T.to && cFrom !== baseCur() ? `<label class="f">Курс: 1 ${isMetal(cFrom) ? 'г' : esc(symFrom)} = ? ${esc(CUR[baseCur()].sym)} <span class="muted">(можно поправить)</span></label><input class="in" id="rate" inputmode="decimal" value="${esc(d.rate)}" placeholder="курс">` : '';
+  const fxRow = T.fx ? `<label class="f">Получила на счёт «${esc(d.to || '…')}»${cTo ? ' (' + esc((CUR[cTo] || {}).sym || cTo) + ')' : ''}</label><input class="in" id="amountTo" inputmode="decimal" value="${esc(d.amountTo)}" placeholder="сколько получила">
+    <div class="muted" id="fxRate" style="margin-top:4px"></div>` : '';
   $('#view').innerHTML = `
   <h2>${S.edit ? 'Правка операции' : 'Новая операция'}</h2>
   <div class="seg">${TYPES.slice(0, 4).map(x => `<button class="chip ${x.t === d.type ? 'on' : ''}" data-type="${x.t}">${x.t === 'Перевод между счетами' ? 'Перевод' : x.t}</button>`).join('')}
     <select class="chip" id="moreType" style="padding:6px 10px"><option value="">Ещё…</option>${TYPES.slice(4).map(x => `<option ${x.t === d.type ? 'selected' : ''}>${x.t}</option>`).join('')}</select></div>
   <div class="muted" style="margin-top:6px">${esc(T.hint)}</div>
-  <input class="amount" id="amount" inputmode="decimal" placeholder="0 ₸" value="${d.amount}">
+  <input class="amount" id="amount" inputmode="decimal" placeholder="0 ${esc(isMetal(cFrom) ? 'г' : symFrom)}" value="${d.amount}">
   ${cats.length ? `<label class="f">Категория</label><div class="tiles">${cats.map(c => `<div class="tile ${c === d.cat ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</div>`).join('')}</div>` : ''}
   ${subs.length ? `<label class="f">Подкатегория</label><div class="seg">${subs.map(s => `<button class="chip ${s === d.sub ? 'on' : ''}" data-sub="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
   ${T.person ? `<label class="f">Человек</label><div class="seg">${S.cfg.people.map(p => `<button class="chip ${p.name === d.person ? 'on' : ''}" data-person="${esc(p.name)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
   <div class="grid2"><div><label class="f">${T.to ? 'Со счёта' : 'Счёт'}</label><select class="in" id="account">${accOpts}</select></div>
     <div><label class="f">Дата</label><input class="in" type="date" id="date" value="${d.date}"></div></div>
-  ${T.to ? `<label class="f">На счёт</label><select class="in" id="to"><option value="">—</option>${S.cfg.accounts.map(a => `<option ${a.name === d.to ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : ''}
+  ${T.to ? `<label class="f">На счёт</label><select class="in" id="to"><option value="">—</option>${S.cfg.accounts.map(a => `<option value="${esc(a.name)}" ${a.name === d.to ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('')}</select>` : ''}
+  ${fxRow}${rateRow}
   <label class="f">Комментарий</label><input class="in" id="comment" value="${esc(d.comment)}" placeholder="необязательно">
   <div class="err" id="err"></div>
   <button class="btn" id="save">${S.edit ? 'Сохранить изменения' : 'Сохранить'}</button>
   ${S.edit ? '<button class="btn danger" id="del">Удалить операцию</button>' : ''}
   <button class="btn light" id="cancel">Отмена</button>`;
-  const sync = () => { d.amount = $('#amount').value; d.account = $('#account').value; d.date = $('#date').value; d.comment = $('#comment').value; if ($('#to')) d.to = $('#to').value; };
+  const sync = () => { d.amount = $('#amount').value; d.account = $('#account').value; d.date = $('#date').value; d.comment = $('#comment').value; if ($('#to')) d.to = $('#to').value; if ($('#amountTo')) d.amountTo = $('#amountTo').value; if ($('#rate')) d.rate = $('#rate').value; };
+  // Смена счёта меняет валюту → перерисовать (значок, курс, поле «получила»)
+  $('#account').onchange = () => { sync(); d.rate = ''; renderAdd(); };
+  if ($('#to')) $('#to').onchange = () => { sync(); renderAdd(); };
+  const showFx = () => { const el = $('#fxRate'); if (!el) return; const a = num($('#amount').value), b2 = num($('#amountTo').value);
+    if (a > 0 && b2 > 0 && cTo) { const c1 = isMetal(cFrom) ? 'г' : symFrom, c2 = isMetal(cTo) ? 'г' : (CUR[cTo] || {}).sym; const rr = x => (+x.toFixed(x < 10 ? 4 : 2)).toLocaleString('ru-RU'); el.textContent = b2 >= a ? `Курс: 1 ${c1} = ${rr(b2 / a)} ${c2}` : `Курс: 1 ${c2} = ${rr(a / b2)} ${c1}`; } else el.textContent = ''; };
+  if ($('#amountTo')) { $('#amountTo').oninput = showFx; $('#amount').oninput = showFx; showFx(); }
   document.querySelectorAll('[data-type]').forEach(b => b.onclick = () => { sync(); d.type = b.dataset.type; d.cat = ''; d.sub = ''; renderAdd(); });
   $('#moreType').onchange = e => { if (!e.target.value) return; sync(); d.type = e.target.value; d.cat = ''; d.sub = ''; renderAdd(); };
   document.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { sync(); d.cat = b.dataset.cat; d.sub = ''; renderAdd(); });
@@ -242,6 +341,11 @@ function renderAdd() {
     const T2 = TYPE[d.type];
     const op = { ...d, amount: num(d.amount) };
     if (!T2.grp) { op.cat = ''; op.sub = ''; } if (!T2.person) op.person = ''; if (!T2.to) op.to = '';
+    op.amountTo = T2.fx ? num(d.amountTo) : 0;
+    // Курс к основной валюте запоминаем в операции (траты/доходы в чужой валюте не «плывут» при смене курса)
+    const c0 = curOf(op.account);
+    if (!T2.to && c0 !== baseCur()) { const rv = parseFloat(String(d.rate).replace(/\s/g, '').replace(',', '.')); if (!(rv > 0)) { $('#err').textContent = '⚠ Укажи курс (нет интернета — впиши вручную)'; return; } op.rate = rv; }
+    else op.rate = 0;
     const err = validate(op); if (err) { $('#err').textContent = '⚠ ' + err; return; }
     const now = Date.now();
     if (S.edit) { Object.assign(op, { id: S.edit, updatedAt: now, device: DEVICE }); const i = S.ops.findIndex(x => x.id === S.edit); op.createdAt = S.ops[i].createdAt; S.ops[i] = op; }
@@ -261,15 +365,16 @@ function renderAdd() {
   if (!S.edit) setTimeout(() => $('#amount').focus(), 50);
 }
 function afterSaveText(o) {
-  const T = TYPE[o.type];
-  const bal = balances()[o.account];
+  const T = TYPE[o.type], b = balances(), c = curOf(o.account);
+  const bal = fmt(b[o.account], c);
   if (o.type === 'Расход') {
-    const m = mkey(o.date), c = budget(m).cats.find(x => x.cat === o.cat);
-    const tail = c && c.plan ? (c.plan - c.fact >= 0 ? `${o.cat}: осталось ${money(c.plan - c.fact)} из ${money(c.plan)}` : `${o.cat}: перерасход ${money(c.fact - c.plan)}`) : `${o.cat}: без плана`;
-    return `${o.sub} −${money(o.amount)} · ${tail} · ${o.account}: ${money(bal)}`;
+    const m = mkey(o.date), cc = budget(m).cats.find(x => x.cat === o.cat);
+    const tail = cc && cc.plan ? (cc.plan - cc.fact >= 0 ? `${o.cat}: осталось ${money(cc.plan - cc.fact)} из ${money(cc.plan)}` : `${o.cat}: перерасход ${money(cc.fact - cc.plan)}`) : `${o.cat}: без плана`;
+    return `${o.sub} −${fmt(o.amount, c)} · ${tail} · ${o.account}: ${bal}`;
   }
-  if (T.to) return `Перевод ${money(o.amount)}: ${o.account} → ${o.to}`;
-  return `${o.type} ${T.sign > 0 ? '+' : '−'}${money(o.amount)} · ${o.account}: ${money(bal)}`;
+  if (T.fx) return `Обмен: −${fmt(o.amount, c)} → +${fmt(o.amountTo, curOf(o.to))} · ${o.to}: ${fmt(b[o.to], curOf(o.to))}`;
+  if (T.to) return `Перевод ${fmt(o.amount, c)}: ${o.account} → ${o.to}`;
+  return `${o.type} ${T.sign > 0 ? '+' : '−'}${fmt(o.amount, c)} · ${o.account}: ${bal}`;
 }
 
 // ---------- Бюджет ----------
@@ -310,12 +415,31 @@ function renderMore() {
     <details style="margin-top:6px"><summary class="muted" style="font-weight:600">Что такое «Сейчас в банке (сверка)»?</summary>
     <div class="muted">Проверка, не забыла ли ты внести какую-то операцию. Раз в неделю открой банк и впиши, сколько там денег на самом деле. Совпало с учётом — всё внесено ✓. Не совпало — на «Обзоре» появится подсказка: найди пропущенную операцию или внеси разницу как «Корректировка». Поле можно оставлять пустым.</div></details></div>
   <div class="card">${S.cfg.accounts.map((a, i) => `<div class="row" style="display:block">
-    <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${money(b[a.name])}</span></div>
-    <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
+    <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${fmt(b[a.name], accCur(a))}</span></div>
+    <label class="f">Валюта счёта</label><select class="in" data-acc="${i}" data-k="cur">${CURRENCIES.map(c => `<option value="${c.code}" ${c.code === accCur(a) ? 'selected' : ''}>${c.code} — ${esc(c.name)}</option>`).join('')}</select>
+    <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}${isMetal(accCur(a)) ? ', г' : ''}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
     <div><label class="f">Сейчас в банке (сверка)</label><input class="in" data-acc="${i}" data-k="fact" inputmode="numeric" value="${a.fact ?? ''}" placeholder="—"></div></div>
     <label class="f"><input type="checkbox" data-acc="${i}" data-k="savings" ${a.savings ? 'checked' : ''}> это накопления</label>
     <div class="grid2"><input class="in" data-acc="${i}" data-k="name" value="${esc(a.name)}"><button class="btn small light" data-delacc="${i}">Убрать счёт</button></div></div>`).join('')}
     <button class="btn small" id="addAcc">+ Счёт</button></div>
+  <h2>Валюты и курсы</h2>
+  <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работают валюты и золото?</summary>
+  <div class="muted" style="padding-bottom:8px">
+    <p style="margin:4px 0"><b>У каждого счёта своя валюта</b> (выбирается выше): тенге, доллары, евро… Для золота и серебра выбери «Золото (граммы)» — счёт будет в граммах.</p>
+    <p style="margin:4px 0"><b>Купила валюту или золото</b> — операция «Обмен валюты» («+» → «Ещё…»): сколько отдала с одного счёта и сколько получила на другой.</p>
+    <p style="margin:4px 0"><b>Траты в другой валюте</b> (например, в поездке) пересчитываются в основную валюту по курсу, который запоминается в операции — старые отчёты не меняются, когда меняется курс.</p>
+    <p style="margin:4px 0"><b>Итоги</b> («Всего денег», «Накопления») — в основной валюте по текущему курсу. Металлы входят в накопления, но не в «Свободно».</p>
+    <p style="margin:4px 0"><b>Курсы</b> подтягиваются сами раз в 12 часов. Золото — мировая биржевая цена; банк покупает и продаёт слитки по своей цене — её можно вписать вручную. Пустое поле «Свой курс» = автоматический.</p>
+    <p style="margin:4px 0">Это учёт, а не инвестиционная рекомендация.</p>
+  </div></details>
+  <div class="card" style="padding:10px 12px">
+    <label class="f" style="margin-top:0">Основная валюта (в ней итоги и бюджет)</label>
+    <select class="in" id="baseCur" ${live().length ? 'disabled' : ''}>${CURRENCIES.filter(c => !c.metal).map(c => `<option value="${c.code}" ${c.code === baseCur() ? 'selected' : ''}>${c.code} — ${esc(c.name)}</option>`).join('')}</select>
+    ${live().length ? '<div class="muted" style="margin-top:4px">Основную валюту можно менять, только пока нет операций.</div>' : ''}
+    ${ratesTable()}
+    <button class="btn small" id="refreshRates">↻ Обновить курсы</button>
+    <div class="muted" style="margin-top:6px">${Rates.data ? `Курсы: ${esc(Rates.data.src)}, на ${esc(Rates.data.date)}; загружено ${new Date(Rates.data.fetchedAt).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : 'Курсы ещё не загружались.'} Источники: <a href="https://github.com/fawazahmed0/exchange-api" target="_blank" rel="noopener">Currency API</a>, запасной — <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Rates By Exchange Rate API</a>.</div>
+  </div>
   <h2>Категории и план в месяц</h2>
   <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работает «План в месяц»?</summary>
   <div class="muted" style="padding-bottom:8px">
@@ -350,6 +474,11 @@ function renderMore() {
   document.querySelectorAll('[data-acc]').forEach(inp => inp.addEventListener('change', async () => {
     const a = S.cfg.accounts[+inp.dataset.acc], k = inp.dataset.k;
     if (k === 'savings') a.savings = inp.checked;
+    else if (k === 'cur') {
+      if (live().some(o => o.account === a.name || o.to === a.name)) { toast('По счёту уже есть операции — валюту не поменять. Создай новый счёт в нужной валюте'); return renderMore(); }
+      a.cur = inp.value; if (isMetal(a.cur)) a.savings = true;
+      if (a.cur !== baseCur() && !Rates.get(a.cur)) Rates.refresh().then(renderMore).catch(() => {});
+    }
     else if (k === 'name') { const old = a.name, nv = inp.value.trim(); if (!nv || S.cfg.accounts.some(x => x !== a && x.name === nv)) { toast('Такое имя уже есть'); return renderMore(); } a.name = nv; for (const o of S.ops) { let ch = false; if (o.account === old) { o.account = nv; ch = true; } if (o.to === old) { o.to = nv; ch = true; } if (ch) { o.updatedAt = Date.now(); await DB.put(o); } } }
     else a[k] = inp.value === '' ? (k === 'fact' ? null : 0) : num(inp.value);
     await saveCfg(); toast('Сохранено'); renderMore();
@@ -366,6 +495,14 @@ function renderMore() {
     if (!confirm('Убрать счёт «' + a.name + '»?')) return;
     S.cfg.accounts.splice(+btn.dataset.delacc, 1); await saveCfg(); renderMore();
   });
+  $('#baseCur').onchange = async e => { S.cfg.base = e.target.value; await saveCfg(); Rates.refresh().catch(() => {}).finally(renderMore); };
+  $('#refreshRates').onclick = () => { toast('Обновляю курсы…'); Rates.refresh().then(() => { toast('Курсы обновлены ✓'); renderMore(); }).catch(e => toast('⚠ ' + e.message + ' — можно вписать курс вручную')); };
+  document.querySelectorAll('[data-rate]').forEach(inp => inp.addEventListener('change', async () => {
+    const code = inp.dataset.rate, v = parseFloat(inp.value.replace(/\s/g, '').replace(',', '.'));
+    S.cfg.rateManual = S.cfg.rateManual || {};
+    if (v > 0) S.cfg.rateManual[code] = { v, at: today() }; else delete S.cfg.rateManual[code];
+    await saveCfg(); toast(v > 0 ? `Свой курс ${code}: ${v}` : `${code}: автоматический курс`); renderMore();
+  }));
   $('#addAcc').onclick = async () => { let n = 'Новый счёт', i = 2; while (S.cfg.accounts.some(a => a.name === n)) n = 'Новый счёт ' + i++; S.cfg.accounts.push({ name: n, type: 'Карта', savings: false, start: 0, fact: null }); await saveCfg(); renderMore(); };
   document.querySelectorAll('[data-base]').forEach(inp => inp.addEventListener('change', async () => { const [ci, si] = inp.dataset.base.split('|').map(Number); S.cfg.exp[ci].subs[si].base = num(inp.value); await saveCfg(); toast('План сохранён'); }));
   document.querySelectorAll('[data-addsub]').forEach(btn => btn.onclick = async () => { const ci = +btn.dataset.addsub, v = $('#ns' + ci).value.trim(); if (!v) return; const c = S.cfg.exp[ci]; if (c.subs.some(s => s.name === v)) return toast('Уже есть'); c.subs.splice(c.subs.length - 1, 0, { name: v, oblig: 'Важный', char: 'Переменный', period: 'Ежемесячный', base: 0 }); await saveCfg(); renderMore(); });
@@ -404,6 +541,15 @@ function renderMore() {
     } catch (err) { toast('Не удалось прочитать файл: ' + err.message); }
   };
 }
+// Таблица курсов: валюты, которые есть в счетах (или основные, если других нет)
+function ratesTable() {
+  const codes = Rates.used().length ? Rates.used() : ['USD', 'EUR', 'RUB', 'XAU'].filter(c => c !== baseCur());
+  const bs = CUR[baseCur()].sym;
+  return `<table class="t" style="margin-top:8px"><tr><th>Валюта</th><th>Авто</th><th>Свой курс</th></tr>${codes.map(c => {
+    const a = Rates.auto(c), m = Rates.manual(c), unit = isMetal(c) ? '1 г ' + (c === 'XAU' ? 'золота' : 'серебра') : '1 ' + (CUR[c].sym);
+    return `<tr><td>${esc(unit)}</td><td>${a ? (+a.toFixed(a < 10 ? 4 : 2)).toLocaleString('ru-RU') + ' ' + esc(bs) : '—'}</td><td><input class="mini" data-rate="${c}" inputmode="decimal" value="${m ?? ''}" placeholder="авто"></td></tr>`;
+  }).join('')}</table>`;
+}
 const ROLES = ['Семья', 'Друзья', 'Отношения', 'Банк', 'Работа', 'Учёба', 'Другое'];
 function roleOptions(cur) {
   const list = [...new Set([...ROLES, ...S.cfg.people.map(p => p.role).filter(Boolean)])];
@@ -411,8 +557,9 @@ function roleOptions(cur) {
 }
 function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
 function exportCsv() {
-  const head = ['Дата', 'Тип', 'Счёт', 'Категория', 'Подкатегория', 'Сумма', 'Человек', 'Получатель', 'Комментарий'];
-  const rows = live().sort((a, b) => a.date.localeCompare(b.date)).map(o => [o.date.split('-').reverse().join('.'), o.type, o.account, o.cat, o.sub, String(o.amount).replace('.', ','), o.person, o.to, o.comment]);
+  const head = ['Дата', 'Тип', 'Счёт', 'Валюта', 'Категория', 'Подкатегория', 'Сумма', 'Курс', 'Сумма в ' + baseCur(), 'Получила (обмен)', 'Человек', 'Получатель', 'Комментарий'];
+  const dec = v => (v === '' || v === undefined || v === null) ? '' : String(r2(v)).replace('.', ',');
+  const rows = live().sort((a, b) => a.date.localeCompare(b.date)).map(o => [o.date.split('-').reverse().join('.'), o.type, o.account, curOf(o.account), o.cat, o.sub, dec(o.amount), o.rate ? String(o.rate).replace('.', ',') : '', TYPE[o.type] && !TYPE[o.type].to ? dec(opBase(o)) : '', o.amountTo ? dec(o.amountTo) + ' ' + curOf(o.to) : '', o.person, o.to, o.comment]);
   const csv = '﻿' + [head, ...rows].map(r => r.map(x => '"' + String(x ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
   download(`операции-${today()}.csv`, csv, 'text/csv');
 }
@@ -519,6 +666,8 @@ function syncInfo() {
   } catch (e) {
     $('#view').innerHTML = '<div class="warn">Не удалось открыть хранилище на устройстве. Проверь, что браузер не в режиме инкогнито.</div>'; return;
   }
+  await Rates.load();
+  if ((Rates.used().length || !Rates.data) && Rates.stale() && navigator.onLine !== false) Rates.refresh().then(() => { if (S.tab !== 'add') render(); }).catch(() => {});
   const t = today(); S.month = t < S.cfg.startDate ? mkey(S.cfg.startDate) : mkey(t);
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { if (b.dataset.tab === 'add') { S.edit = null; S.draft = null; } setTab(b.dataset.tab); });
   $('#mPrev').onclick = () => { S.month = mshift(S.month, -1); render(); };
