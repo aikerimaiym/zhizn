@@ -278,6 +278,24 @@ async function addPocketMoves(moves, comment) {
   Sync.soon();
 }
 
+// ---------- Проценты по депозиту ----------
+// Приблизительно: остаток × ставка / 12. Банки считают по-разному (по дням, минимальному остатку) — точная сумма та, что пришла.
+const interestMonthly = (a, bal) => (+a.rate > 0 && bal > 0) ? r2(bal * a.rate / 100 / 12) : 0;
+function projectDeposit(a, bal, months) {
+  const r = (+a.rate || 0) / 100 / 12; if (!(bal > 0) || !r) return r2(bal || 0);
+  return r2(a.capitalize !== false ? bal * Math.pow(1 + r, months) : bal + bal * r * months);
+}
+// Ожидаемые проценты как «поступления» в календаре платежей (не редактируются — считаются из счёта)
+function interestPayments() {
+  const b = balances();
+  return S.cfg.accounts.filter(a => a.savings && +a.rate > 0 && !isMetal(accCur(a))).map(a => ({
+    id: 'int:' + a.name, name: 'Проценты: ' + a.name, kind: 'in', auto: true, toSavings: true,
+    amount: r2(toBase(interestMonthly(a, b[a.name]), accCur(a))), account: a.name, cat: 'Банк', sub: 'Проценты по депозиту', person: '',
+    freq: 'month', day: +a.payDay || 1, start: S.cfg.startDate, end: '', active: true,
+  }));
+}
+const allPayments = () => [...payments(), ...interestPayments()];
+
 // ---------- Регулярные платежи и поступления ----------
 // cfg.payments: [{ id, name, kind:'out'|'in', amount, account, cat, sub, person, freq:'month'|'months'|'year'|'week', n, day, start, end, active }]
 // Оплата распознаётся по операции: явная связь (op.payId) или та же категория/подкатегория рядом с датой платежа.
@@ -315,20 +333,21 @@ const payWindow = (p, due) => p.freq === 'week' ? [dAdd(due, -3), dAdd(due, 3)] 
   : p.freq === 'months' ? [dAdd(due, -15), dAdd(due, 15)] : [due.slice(0, 8) + '01', dIso(new Date(+due.slice(0, 4), +due.slice(5, 7), 0))];
 function payMatches(p, due) {
   const [a, b] = payWindow(p, due);
-  const shared = payments().filter(q => q.active !== false && q.kind === p.kind && q.cat === p.cat && q.sub === p.sub && (q.person || '') === (p.person || '')).length > 1;
+  const shared = allPayments().filter(q => q.active !== false && q.kind === p.kind && q.cat === p.cat && q.sub === p.sub && (q.person || '') === (p.person || '')).length > 1;
   return live().filter(o => {
     if (isPocketOp(o) || validate(o) || o.date < a || o.date > b) return false;
     if (o.payId) return o.payId === p.id;
     if (shared) return false;                                   // одинаковая категория у нескольких платежей — нужна явная отметка
     if (p.kind === 'out') return o.type === 'Расход' && o.cat === p.cat && o.sub === p.sub;
     if (p.person) return o.type === 'Помощь' && o.person === p.person;
+    if (p.toSavings) return o.type === 'Доход' && o.cat === p.cat && o.sub === p.sub && o.account === p.account;
     return o.type === 'Доход' && o.cat === p.cat && o.sub === p.sub;
   });
 }
 // Все даты платежей в окне со статусами
 function payCalendar(from, to) {
   const t = today(), rows = [];
-  for (const p of payments()) {
+  for (const p of allPayments()) {
     if (p.active === false) continue;
     for (const due of payDates(p, from, to)) {
       const paid = r2(payMatches(p, due).reduce((s, o) => s + opBase(o), 0));
@@ -342,7 +361,7 @@ const PAY_ST = { paid: ['✅', 'оплачено'], partial: ['◐', 'части
 // Прогноз: сколько уйдёт и придёт за 7 и 30 дней и хватит ли денег до следующего поступления
 function payForecast() {
   const t = today(), cal = payCalendar(dAdd(t, -60), dAdd(t, 400)).filter(r => r.status !== 'paid');
-  const outs = cal.filter(r => r.p.kind === 'out'), ins = cal.filter(r => r.p.kind === 'in' && r.due >= t);
+  const outs = cal.filter(r => r.p.kind === 'out'), ins = cal.filter(r => r.p.kind === 'in' && !r.p.toSavings && r.due >= t);   // проценты идут на депозит — не в «хватит ли до поступления»
   const sumTo = (list, d) => r2(list.filter(r => r.due <= d).reduce((s, r) => s + r.left, 0));
   const cash = totals(balances()).free;                         // деньги на обычных (не накопительных) счетах
   const next = ins[0];
@@ -375,7 +394,7 @@ function renderOverview() {
   const now = balances();
   S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && a.fact !== undefined && r2(+a.fact) !== r2(now[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${fmt(+a.fact, accCur(a))}, по учёту ${fmt(now[a.name], accCur(a))} — найди пропущенную операцию или внеси «Корректировку»`]));
   if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`]);
-  if (payments().length) {
+  if (allPayments().length) {
     const pf = payForecast(), soon = payCalendar(today(), dAdd(today(), 3)).filter(r => r.p.kind === 'out' && r.status !== 'paid');
     pf.overdue.forEach(r => warns.push(['warn', `⚠ Просрочен платёж «${r.p.name}» (${dHuman(r.due)}) — ${money(r.left)}`]));
     soon.forEach(r => warns.push(['info', `📅 Скоро платёж «${r.p.name}»: ${dHuman(r.due)}, ${money(r.left)}`]));
@@ -414,7 +433,8 @@ function renderOverview() {
 // Строка счёта: остаток в его валюте, для чужой валюты — «≈ в основной»
 function accRow(a, v) {
   const c = accCur(a), r = Rates.get(c);
-  const eq = c !== baseCur() ? `<div class="sub" style="text-align:right">${r ? '≈ ' + money(v * r) : 'нет курса'}</div>` : '';
+  const eq = (c !== baseCur() ? `<div class="sub" style="text-align:right">${r ? '≈ ' + money(v * r) : 'нет курса'}</div>` : '')
+    + (+a.rate > 0 && a.savings ? `<div class="sub pos" style="text-align:right">≈ +${fmt(interestMonthly(a, v), c)}/мес · ${String(a.rate).replace('.', ',')}%</div>` : '');
   return `<div class="row"><span>${esc(a.name)}${a.savings || isMetal(c) ? ' <span class="sub">· накопления</span>' : ''}</span><div style="text-align:right;white-space:nowrap"><b class="${v < 0 ? 'neg' : ''}">${fmt(v, c)}</b>${eq}</div></div>`;
 }
 function catBar(c) {
@@ -534,7 +554,7 @@ function renderAdd() {
 function payLinkRow(d) {
   const kind = d.type === 'Расход' ? 'out' : (d.type === 'Доход' || d.type === 'Помощь') ? 'in' : '';
   if (!kind) return '';
-  const fit = payments().filter(p => p.active !== false && p.kind === kind && (p.id === d.payId ||
+  const fit = allPayments().filter(p => p.active !== false && p.kind === kind && (p.id === d.payId ||
     (d.type === 'Помощь' ? p.person && p.person === d.person : !p.person && p.cat === d.cat && p.sub === d.sub && d.sub)));
   if (!fit.length) return '';
   return `<label class="f">Это оплата регулярного платежа?</label><div class="seg">${fit.map(p => `<button class="chip ${d.payId === p.id ? 'on' : ''}" data-paylink="${p.id}">📅 ${esc(p.name)}</button>`).join('')}<button class="chip ${!d.payId ? 'on' : ''}" data-paylink="">Нет</button></div>`;
@@ -589,7 +609,7 @@ function renderPayments() {
   bindBudgetSeg(); bindPayForm(p0);
   document.querySelectorAll('[data-payedit]').forEach(b => b.onclick = () => { S.payEdit = b.dataset.payedit; renderPayments(); setTimeout(() => $('#pfName') && $('#pfName').scrollIntoView({ block: 'center' }), 50); });
   document.querySelectorAll('[data-paynow]').forEach(b => b.onclick = () => {
-    const [id, due] = b.dataset.paynow.split('|'), p = payments().find(x => x.id === id), r = cal.find(x => x.p.id === id && x.due === due);
+    const [id, due] = b.dataset.paynow.split('|'), p = allPayments().find(x => x.id === id), r = cal.find(x => x.p.id === id && x.due === due);
     S.edit = null;
     S.draft = { ...newDraft(), type: p.kind === 'out' ? 'Расход' : (p.person ? 'Помощь' : 'Доход'), amount: String(r ? r.left : p.amount), account: p.account || newDraft().account, cat: p.cat || '', sub: p.sub || '', person: p.person || '', payId: id, date: today() };
     setTab('add');
@@ -759,6 +779,10 @@ function renderMore() {
     <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}${isMetal(accCur(a)) ? ', г' : ''}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
     <div><label class="f">Сейчас в банке (сверка)</label><input class="in" data-acc="${i}" data-k="fact" inputmode="numeric" value="${a.fact ?? ''}" placeholder="—"></div></div>
     <label class="f"><input type="checkbox" data-acc="${i}" data-k="savings" ${a.savings ? 'checked' : ''}> это накопления</label>
+    ${a.savings && !isMetal(accCur(a)) ? `<div class="grid2"><div><label class="f">Ставка, % годовых</label><input class="in" data-acc="${i}" data-k="rate" inputmode="decimal" value="${a.rate || ''}" placeholder="например, 14"></div>
+      <div><label class="f">День начисления</label><input class="in" data-acc="${i}" data-k="payDay" inputmode="numeric" value="${a.payDay || ''}" placeholder="1–31"></div></div>
+      <label class="f"><input type="checkbox" data-acc="${i}" data-k="capitalize" ${a.capitalize !== false ? 'checked' : ''}> проценты прибавляются к вкладу (капитализация)</label>
+      ${+a.rate > 0 ? `<div class="muted">≈ +${fmt(interestMonthly(a, b[a.name]), accCur(a))} в месяц · через 6 мес ≈ ${fmt(projectDeposit(a, b[a.name], 6), accCur(a))} · через 12 мес ≈ ${fmt(projectDeposit(a, b[a.name], 12), accCur(a))} (без пополнений, приблизительно)</div>` : ''}` : ''}
     <div class="grid2"><input class="in" data-acc="${i}" data-k="name" value="${esc(a.name)}"><button class="btn small light" data-delacc="${i}">Убрать счёт</button></div></div>`).join('')}
     <button class="btn small" id="addAcc">+ Счёт</button></div>
   <h2>Валюты и курсы</h2>
@@ -821,6 +845,8 @@ function renderMore() {
   document.querySelectorAll('[data-acc]').forEach(inp => inp.addEventListener('change', async () => {
     const a = S.cfg.accounts[+inp.dataset.acc], k = inp.dataset.k;
     if (k === 'savings') a.savings = inp.checked;
+    else if (k === 'capitalize') a.capitalize = inp.checked;
+    else if (k === 'payDay') a.payDay = Math.min(31, Math.max(0, Math.round(num(inp.value)))) || null;
     else if (k === 'cur') {
       if (live().some(o => o.account === a.name || o.to === a.name)) { toast('По счёту уже есть операции — валюту не поменять. Создай новый счёт в нужной валюте'); return renderMore(); }
       a.cur = inp.value; if (isMetal(a.cur)) a.savings = true;
