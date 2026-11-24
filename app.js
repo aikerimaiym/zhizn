@@ -142,7 +142,7 @@ function renderOverview() {
   const warns = [];
   if (errs) warns.push(['warn', `⚠ Операций с ошибками: ${errs} — открой «Историю», они не в итогах`]);
   over.forEach(c => warns.push(['warn', `⚠ Перерасход: ${c.cat} — ${money(c.fact - c.plan)} сверх плана`]));
-  S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && Math.round(+a.fact) !== Math.round(balances()[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${money(+a.fact)}, по учёту ${money(balances()[a.name])}`]));
+  S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && Math.round(+a.fact) !== Math.round(balances()[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${money(+a.fact)}, по учёту ${money(balances()[a.name])} — найди пропущенную операцию или внеси «Корректировку»`]));
   if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»']);
   if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»']);
   if (!warns.length) warns.push(['ok', '✓ Всё в порядке']);
@@ -297,11 +297,13 @@ function renderMore() {
   <h2>Счета</h2>
   <div class="card" style="padding:10px 12px"><label class="f" style="margin-top:0">Дата начала учёта</label>
     <input class="in" type="date" id="startDate" value="${S.cfg.startDate}">
-    <div class="muted" style="margin-top:4px">Начальные остатки вводятся на эту дату. Операции раньше неё не считаются — чтобы деньги не учлись дважды.</div></div>
+    <div class="muted" style="margin-top:4px">Начальные остатки вводятся на эту дату. Операции раньше неё не считаются — чтобы деньги не учлись дважды.</div>
+    <details style="margin-top:6px"><summary class="muted" style="font-weight:600">Что такое «Сейчас в банке (сверка)»?</summary>
+    <div class="muted">Проверка, не забыла ли ты внести какую-то операцию. Раз в неделю открой банк и впиши, сколько там денег на самом деле. Совпало с учётом — всё внесено ✓. Не совпало — на «Обзоре» появится подсказка: найди пропущенную операцию или внеси разницу как «Корректировка». Поле можно оставлять пустым.</div></details></div>
   <div class="card">${S.cfg.accounts.map((a, i) => `<div class="row" style="display:block">
     <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${money(b[a.name])}</span></div>
     <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
-    <div><label class="f">Факт по банку (для сверки)</label><input class="in" data-acc="${i}" data-k="fact" inputmode="numeric" value="${a.fact ?? ''}" placeholder="—"></div></div>
+    <div><label class="f">Сейчас в банке (сверка)</label><input class="in" data-acc="${i}" data-k="fact" inputmode="numeric" value="${a.fact ?? ''}" placeholder="—"></div></div>
     <label class="f"><input type="checkbox" data-acc="${i}" data-k="savings" ${a.savings ? 'checked' : ''}> это накопления</label>
     <div class="grid2"><input class="in" data-acc="${i}" data-k="name" value="${esc(a.name)}"><button class="btn small light" data-delacc="${i}">Убрать счёт</button></div></div>`).join('')}
     <button class="btn small" id="addAcc">+ Счёт</button></div>
