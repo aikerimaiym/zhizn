@@ -144,6 +144,11 @@ function toBase(v, code) { const r = Rates.get(code); return code === baseCur() 
 // ---------- Проверка операции ----------
 function validate(o) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date || '')) return 'Укажи дату';
+  if (isPocketOp(o)) {   // перекладка между карманами (деньги не двигаются, меняется только назначение)
+    const names = pockets().map(p => p.name);
+    if (!(o.amount > 0) || o.from === o.to || (o.from && !names.includes(o.from)) || (o.to && !names.includes(o.to))) return 'Неверная перекладка';
+    return '';
+  }
   if (o.date < S.cfg.startDate) return 'Дата раньше начала учёта (' + S.cfg.startDate.split('-').reverse().join('.') + ')';
   const T = TYPE[o.type]; if (!T) return 'Выбери тип';
   if (!(o.amount > 0)) return 'Сумма должна быть больше нуля';
@@ -161,7 +166,7 @@ function validate(o) {
 function balances(uptoMonth) {
   const b = Object.fromEntries(S.cfg.accounts.map(a => [a.name, +a.start || 0]));
   for (const o of live()) {
-    if (validate(o)) continue;
+    if (isPocketOp(o) || validate(o)) continue;
     if (uptoMonth && mkey(o.date) > uptoMonth) continue;
     const T = TYPE[o.type];
     if (b[o.account] !== undefined) b[o.account] += T.sign * o.amount;
@@ -198,6 +203,81 @@ function budget(month) {
   return { cats, plan, fact: f, diff: plan - f };
 }
 
+// ---------- Карманы ----------
+// Карман — деньги с назначением. Деньги физически не двигаются: карман — это «пометка» внутри реальных денег.
+// «Свободно» = деньги на обычных счетах − сумма карманов. Подушка = накопительные счета (депозит, металлы).
+// Перекладки хранятся как операции type '_pocket' {from, to, amount} ('' = «Свободно»).
+// Гибкие карманы: остаток прошлых месяцев возвращается в «Свободно» (учитывается только текущий месяц).
+const POCKET_KINDS = {
+  mandatory: { l: 'Обязательный', i: '🔒', d: 'остаток остаётся; на перерасход не берётся' },
+  saving: { l: 'Накопительный', i: '📦', d: 'остаток копится (годовые и сезонные траты); на перерасход — только вручную' },
+  flexible: { l: 'Гибкий', i: '🌿', d: 'остаток в конце месяца возвращается в «Свободно»; экономия может покрыть перерасход' },
+  buffer: { l: 'Буфер', i: '🛟', d: 'до 10% месячного плана; покрывает перерасход последним' },
+  protected: { l: 'Защищённый', i: '🛡', d: 'никогда не берётся автоматически' },
+};
+const DEFAULT_POCKET_KIND = { 'Обязательные платежи': 'mandatory', 'Повседневные расходы': 'flexible', 'Красота и уход': 'flexible', 'Блог': 'flexible', 'Спорт': 'saving', 'Автомобиль': 'saving', 'Здоровье': 'saving', 'Сезонные расходы': 'saving', 'Образование': 'saving', 'Путешествия': 'saving', 'Подарки и праздники': 'saving' };
+const isPocketOp = o => o.type === '_pocket';
+function pockets() {
+  if (S.cfg.pockets) return S.cfg.pockets;
+  const ord = ['mandatory', 'saving', 'flexible'];
+  const list = [...new Set(S.cfg.exp.map(c => c.pocket).filter(Boolean))].map(n => ({ name: n, kind: DEFAULT_POCKET_KIND[n] || 'flexible' }));
+  list.sort((a, b) => ord.indexOf(a.kind) - ord.indexOf(b.kind));
+  return [...list, { name: 'Буфер', kind: 'buffer' }, { name: 'Подушка', kind: 'protected', linkSavings: true }];
+}
+const pocketOfCat = cat => {
+  const c = S.cfg.exp.find(x => x.cat === cat), p = c && c.pocket, ps = pockets();
+  return ps.some(x => x.name === p && !x.linkSavings) ? p : ((ps.find(x => x.kind === 'flexible') || ps[0] || {}).name);
+};
+function pocketMonthPlan(name, M) { let s = 0; for (const c of S.cfg.exp) if (pocketOfCat(c.cat) === name) for (const sb of c.subs) s += planFor(M, c.cat, sb.name); return s; }
+function pocketState(M) {
+  const list = pockets();
+  const st = Object.fromEntries(list.map(p => [p.name, { ...p, bal: 0, inM: 0, spentM: 0, plan: p.linkSavings || p.kind === 'buffer' ? 0 : pocketMonthPlan(p.name, M) }]));
+  const old = (n, o) => st[n] && st[n].kind === 'flexible' && mkey(o.date) !== M;   // старые месяцы гибких карманов не считаются
+  for (const o of live()) {
+    if (o.date < S.cfg.startDate || mkey(o.date) > M || validate(o)) continue;
+    if (isPocketOp(o)) {
+      const cur = mkey(o.date) === M;
+      if (o.to && st[o.to] && !st[o.to].linkSavings && !old(o.to, o)) { st[o.to].bal += o.amount; if (cur) st[o.to].inM += o.amount; }
+      if (o.from && st[o.from] && !st[o.from].linkSavings && !old(o.from, o)) { st[o.from].bal -= o.amount; if (cur) st[o.from].inM -= o.amount; }
+    } else if (o.type === 'Расход') {
+      const p = st[pocketOfCat(o.cat)]; if (!p || p.linkSavings || old(p.name, o)) continue;
+      const v = opBase(o); p.bal -= v; if (mkey(o.date) === M) p.spentM += v;
+    }
+  }
+  const t = totals(balances(M));
+  for (const p of Object.values(st)) if (p.linkSavings) p.bal = t.sav;
+  for (const p of Object.values(st)) p.bal = r2(p.bal);
+  const inPockets = r2(Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + p.bal, 0));
+  return { st, list: list.map(p => st[p.name]), free: r2(t.free - inPockets), total: t.total, inPockets, savings: t.sav, planTotal: list.reduce((s, p) => s + st[p.name].plan, 0) };
+}
+// Предложение распределения по правилу: обязательные → накопительные → гибкие → буфер до 10% плана. Остаток — в «Свободно» (цели — следующий этап).
+function suggestDistribution(M, avail) {
+  const ps = pocketState(M), items = [];
+  let left = r2(Math.max(0, avail ?? ps.free));
+  const take = (p, need) => { const v = r2(Math.min(left, Math.max(0, need))); if (v > 0) { items.push({ to: p.name, amount: v }); left = r2(left - v); } };
+  for (const kind of ['mandatory', 'saving', 'flexible']) for (const p of ps.list.filter(p => p.kind === kind)) take(p, Math.max(p.plan - p.inM, -p.bal));
+  for (const p of ps.list.filter(p => p.kind === 'buffer')) take(p, 0.1 * ps.planTotal - p.bal);
+  return { items, left };
+}
+// Покрытие перерасхода кармана: свободные деньги → экономия гибких карманов → буфер. Обязательные, накопительные и Подушку не трогаем.
+function coverPlan(M, name) {
+  const ps = pocketState(M), p = ps.st[name], moves = [];
+  let d = r2(-p.bal); if (d <= 0) return { moves, left: 0 };
+  const add = (from, v) => { v = r2(Math.min(d, v)); if (v > 0) { moves.push({ from, to: name, amount: v }); d = r2(d - v); } };
+  if (ps.free > 0) add('', ps.free);
+  for (const q of ps.list.filter(q => q.kind === 'flexible' && q.name !== name)) { if (d <= 0) break; add(q.name, q.bal - Math.max(0, q.plan - q.spentM)); }
+  for (const q of ps.list.filter(q => q.kind === 'buffer' && q.name !== name)) { if (d <= 0) break; add(q.name, q.bal); }
+  return { moves, left: d };
+}
+async function addPocketMoves(moves, comment) {
+  const now = Date.now();
+  for (const m of moves) {
+    const op = { id: uid(), type: '_pocket', date: today(), from: m.from, to: m.to, amount: r2(m.amount), account: '', cat: '', sub: '', person: '', comment: comment || '', createdAt: now, updatedAt: now, device: DEVICE, deleted: false };
+    S.ops.push(op); await DB.put(op);
+  }
+  Sync.soon();
+}
+
 // ---------- Навигация ----------
 function setTab(t) { S.tab = t; document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); render(); window.scrollTo(0, 0); }
 function render() {
@@ -210,6 +290,7 @@ function render() {
 function renderOverview() {
   const m = S.month, b = balances(m);
   const { total, sav, missing } = totals(b);
+  const ps = pocketState(m), negPockets = ps.list.filter(p => p.bal < 0 && !p.linkSavings);
   const inc = sumType('Доход', m), help = sumType('Помощь', m), exp = sumType('Расход', m);
   const prevExp = sumType('Расход', mshift(m, -1));
   const bud = budget(m);
@@ -221,6 +302,9 @@ function renderOverview() {
   over.forEach(c => warns.push(['warn', `⚠ Перерасход: ${c.cat} — ${money(c.fact - c.plan)} сверх плана`]));
   const now = balances();
   S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && a.fact !== undefined && r2(+a.fact) !== r2(now[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${fmt(+a.fact, accCur(a))}, по учёту ${fmt(now[a.name], accCur(a))} — найди пропущенную операцию или внеси «Корректировку»`]));
+  if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`]);
+  negPockets.forEach(p => warns.push(['warn', `⚠ Карман «${p.name}» в минусе на ${money(-p.bal)} — покрой его во «Бюджет → Карманы»`]));
+  if (ps.free > 0 && ps.inPockets === 0 && live().length) warns.push(['info', `ℹ ${money(ps.free)} без назначения — разложи по карманам: «Бюджет → Карманы»`]);
   if (missing.length) warns.push(['warn', `⚠ Нет курса для: ${missing.join(', ')} — эти счета не вошли в итоги. Обнови курсы: «Ещё → Валюты и курсы»`]);
   if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»']);
   if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»']);
@@ -230,7 +314,7 @@ function renderOverview() {
   $('#view').innerHTML = `
   <div class="cards">
     <div class="kpi blue"><div class="l">Всего денег</div><div class="v">${money(total)}</div><div class="s">на конец месяца</div></div>
-    <div class="kpi lilac"><div class="l">Свободно</div><div class="v">${money(total - sav)}</div><div class="s">без накоплений · карманы — этап 2</div></div>
+    <div class="kpi lilac"><div class="l">Свободно</div><div class="v ${ps.free < 0 ? 'neg' : ''}">${money(ps.free)}</div><div class="s">не в карманах · в карманах ${money(ps.inPockets)}</div></div>
     <div class="kpi green"><div class="l">Накопления</div><div class="v">${money(sav)}</div><div class="s">${S.cfg.accounts.some(a => isMetal(accCur(a))) ? 'вкл. металлы' : '&nbsp;'}</div></div>
     <div class="kpi powder"><div class="l">Сальдо месяца</div><div class="v ${saldo < 0 ? 'neg' : ''}">${money(saldo)}</div><div class="s">отложено ${inc + help ? pct(saldo / (inc + help)) : '–'}</div></div>
   </div>
@@ -267,7 +351,7 @@ function catBar(c) {
 // ---------- История ----------
 function renderHistory() {
   const q = S.q.toLowerCase();
-  const list = live().filter(o => mkey(o.date) === S.month).filter(o => !q || [o.type, o.cat, o.sub, o.person, o.comment, o.account, String(o.amount)].join(' ').toLowerCase().includes(q))
+  const list = live().filter(o => !isPocketOp(o) && mkey(o.date) === S.month).filter(o => !q || [o.type, o.cat, o.sub, o.person, o.comment, o.account, String(o.amount)].join(' ').toLowerCase().includes(q))
     .sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt));
   let html = `<input class="in search" id="q" placeholder="Поиск: категория, комментарий, сумма…" value="${esc(S.q)}">`;
   let day = '';
@@ -355,6 +439,8 @@ function renderAdd() {
     S.month = mkey(op.date);
     toast(afterSaveText(op));
     S.draft = null; const wasEdit = !!S.edit; S.edit = null;
+    // Пришли деньги → сразу предложить разложить их по карманам
+    if (!wasEdit && (op.type === 'Доход' || op.type === 'Помощь') && suggestDistribution(S.month).items.length) { S.btab = 'pockets'; S.dist = true; setTab('budget'); return; }
     setTab(wasEdit ? 'history' : 'overview');
   };
   if ($('#del')) $('#del').onclick = async () => {
@@ -377,10 +463,89 @@ function afterSaveText(o) {
   return `${o.type} ${T.sign > 0 ? '+' : '−'}${fmt(o.amount, c)} · ${o.account}: ${bal}`;
 }
 
-// ---------- Бюджет ----------
-function renderBudget() {
+// ---------- Бюджет: карманы и план/факт ----------
+const budgetSeg = () => `<div class="seg" style="margin-bottom:10px">${[['pockets', '💼 Карманы'], ['plan', '▤ План и факт']].map(([k, l]) => `<button class="chip ${(S.btab || 'pockets') === k ? 'on' : ''}" data-btab="${k}">${l}</button>`).join('')}</div>`;
+function bindBudgetSeg() { document.querySelectorAll('[data-btab]').forEach(b => b.onclick = () => { S.btab = b.dataset.btab; S.dist = false; renderBudget(); }); }
+function renderBudget() { if ((S.btab || 'pockets') === 'pockets') return renderPockets(); return renderPlanFact(); }
+function renderPockets() {
+  const M = S.month, ps = pocketState(M);
+  const sug = S.dist ? suggestDistribution(M) : null;
+  const opts = (sel, withFree) => (withFree ? `<option value="">Свободно</option>` : '') + ps.list.filter(p => !p.linkSavings).map(p => `<option value="${esc(p.name)}" ${p.name === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  const journal = live().filter(isPocketOp).sort((a, b) => b.createdAt - a.createdAt).slice(0, 12);
+  $('#view').innerHTML = budgetSeg() + `
+  <div class="cards">
+    <div class="kpi ${ps.free < 0 ? 'powder' : 'lilac'}"><div class="l">Свободно</div><div class="v ${ps.free < 0 ? 'neg' : ''}">${money(ps.free)}</div><div class="s">не в карманах</div></div>
+    <div class="kpi blue"><div class="l">В карманах</div><div class="v">${money(ps.inPockets)}</div><div class="s">с назначением</div></div>
+    <div class="kpi green"><div class="l">🛡 Подушка</div><div class="v">${money(ps.savings)}</div><div class="s">накопительные счета</div></div>
+    <div class="kpi powder"><div class="l">Всего</div><div class="v">${money(ps.total)}</div><div class="s">${mlabel(M)}</div></div>
+  </div>
+  ${ps.free < 0 ? `<div class="warn">⚠ Карманы больше, чем денег, на ${money(-ps.free)}: часть карманов не обеспечена. Уменьши карманы (переложи в «Свободно») или внеси поступление.</div>` : ''}
+  ${!S.dist && ps.free > 0 ? `<div class="info">У тебя ${money(ps.free)} без назначения. <button class="btn small" id="distOpen" style="margin:6px 0 0">Распределить по правилу</button></div>` : ''}
+  ${sug ? `<div class="card" style="padding:10px 12px"><b>Распределение ${money(ps.free)}</b>
+    <div class="muted">По правилу: обязательные → накопительные → гибкие → буфер до 10% плана. Суммы можно поменять.</div>
+    <table class="t">${sug.items.map((it, i) => `<tr><td>${esc(POCKET_KINDS[ps.st[it.to].kind].i)} ${esc(it.to)}</td><td><input class="mini" data-dist="${i}" inputmode="decimal" value="${it.amount}"></td></tr>`).join('') || '<tr><td class="muted">Всё уже распределено по плану 🎉</td><td></td></tr>'}
+    <tr><td class="muted">Останется свободно</td><td id="distLeft">${money(sug.left)}</td></tr></table>
+    ${sug.left > 0 ? '<div class="muted">Остаток можно оставить свободным или позже направить на цели (следующий этап).</div>' : ''}
+    ${sug.items.length ? '<button class="btn" id="distOk">Подтвердить распределение</button><button class="btn light" id="distCancel">Не сейчас</button>' : '<button class="btn light" id="distCancel">Понятно</button>'}</div>` : ''}
+  <h2>Карманы · ${mlabel(M)}</h2>
+  ${(() => { const empty = p => !p.linkSavings && p.kind !== 'buffer' && !p.bal && !p.plan && !p.inM && !p.spentM;
+    const act = ps.list.filter(p => !empty(p)), emp = ps.list.filter(empty);
+    return `<div class="card">${act.map(p => pocketRow(p)).join('')}</div>` + (emp.length ? `<details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Пустые карманы (${emp.length})</summary><div class="muted" style="padding-bottom:8px">${emp.map(p => esc(POCKET_KINDS[p.kind].i + ' ' + p.name)).join(' · ')}<br>Появятся в списке, когда в них будет план, деньги или траты.</div></details>` : ''); })()}
+  <details class="card" style="padding:4px 12px"><summary style="font-weight:600">⇄ Переложить между карманами</summary>
+    <div class="grid2"><div><label class="f">Откуда</label><select class="in" id="mvFrom">${opts('', true)}</select></div><div><label class="f">Куда</label><select class="in" id="mvTo">${opts(ps.list.find(p => !p.linkSavings) ? ps.list.find(p => !p.linkSavings).name : '', true)}</select></div></div>
+    <label class="f">Сумма</label><input class="in" id="mvAmt" inputmode="decimal" placeholder="0">
+    <button class="btn small" id="mvOk" style="margin-bottom:10px">Переложить</button></details>
+  ${journal.length ? `<details class="card" style="padding:4px 12px"><summary style="font-weight:600">Журнал карманов</summary>${journal.map(o => `<div class="row"><span class="sub">${o.date.split('-').reverse().join('.')} · ${esc(o.from || 'Свободно')} → ${esc(o.to || 'Свободно')}${o.comment ? ' · ' + esc(o.comment) : ''}</span><span>${money(o.amount)} <button class="btn small light" data-undo="${o.id}" style="margin:0;padding:4px 8px">✕</button></span></div>`).join('')}</details>` : ''}
+  <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работают карманы?</summary><div class="muted" style="padding-bottom:8px">
+    <p style="margin:4px 0"><b>Карман — деньги с назначением</b>: на машину, на обязательные платежи, на повседневные траты. Деньги остаются на твоих счетах, карман просто «помечает», для чего они.</p>
+    <p style="margin:4px 0"><b>Свободно</b> = деньги на обычных счетах − всё, что лежит в карманах. Если карманов больше, чем денег, приложение предупредит.</p>
+    <p style="margin:4px 0"><b>Трата</b> уменьшает карман своей категории (бензин → «Автомобиль»). Какая категория в каком кармане — «Ещё → Категории».</p>
+    <p style="margin:4px 0"><b>Пришли деньги</b> — приложение предложит разложить их по правилу: обязательные → накопительные → гибкие → буфер (до 10% месячного плана).</p>
+    ${Object.values(POCKET_KINDS).map(k => `<p style="margin:4px 0">${k.i} <b>${k.l}</b>: ${k.d}.</p>`).join('')}
+    <p style="margin:4px 0">🛡 <b>Подушка</b> — это твои накопительные счета (депозит, металлы). Пополняется переводом на депозит.</p>
+  </div></details>`;
+  bindBudgetSeg();
+  if ($('#distOpen')) $('#distOpen').onclick = () => { S.dist = true; renderPockets(); };
+  if ($('#distCancel')) $('#distCancel').onclick = () => { S.dist = false; renderPockets(); };
+  const recalcLeft = () => { const sum = [...document.querySelectorAll('[data-dist]')].reduce((s, i) => s + num(i.value), 0); const el = $('#distLeft'); if (el) el.textContent = money(ps.free - sum); };
+  document.querySelectorAll('[data-dist]').forEach(i => i.oninput = recalcLeft);
+  if ($('#distOk')) $('#distOk').onclick = async () => {
+    const moves = sug.items.map((it, i) => ({ from: '', to: it.to, amount: num(document.querySelector(`[data-dist="${i}"]`).value) })).filter(m => m.amount > 0);
+    const sum = moves.reduce((s, m) => s + m.amount, 0);
+    if (r2(sum) > r2(ps.free)) { toast('⚠ Больше, чем свободно — уменьши суммы'); return; }
+    await addPocketMoves(moves, 'распределение'); S.dist = false; toast(`Распределено ${money(sum)} ✓`); renderPockets();
+  };
+  document.querySelectorAll('[data-cover]').forEach(btn => btn.onclick = async () => {
+    const plan = coverPlan(M, btn.dataset.cover);
+    if (!plan.moves.length) { toast('Покрыть нечем: нет свободных денег, экономии гибких карманов и буфера. Переложи вручную.'); return; }
+    const txt = plan.moves.map(m => `${m.from || 'Свободно'}: ${money(m.amount)}`).join('\n');
+    if (!confirm(`Покрыть перерасход «${btn.dataset.cover}»:\n${txt}${plan.left > 0 ? '\n\nНе хватит ещё ' + money(plan.left) : ''}`)) return;
+    await addPocketMoves(plan.moves, 'покрытие перерасхода'); toast('Перерасход покрыт ✓'); renderPockets();
+  });
+  $('#mvOk').onclick = async () => {
+    const from = $('#mvFrom').value, to = $('#mvTo').value, amount = num($('#mvAmt').value);
+    if (from === to || !(amount > 0)) { toast('Выбери разные карманы и сумму'); return; }
+    if (from && ps.st[from] && ps.st[from].bal < amount && !confirm(`В «${from}» только ${money(ps.st[from].bal)}. Всё равно переложить?`)) return;
+    await addPocketMoves([{ from, to, amount }], 'вручную'); toast('Переложено ✓'); renderPockets();
+  };
+  document.querySelectorAll('[data-undo]').forEach(btn => btn.onclick = async () => {
+    if (!confirm('Отменить эту перекладку?')) return;
+    const i = S.ops.findIndex(x => x.id === btn.dataset.undo); S.ops[i] = { ...S.ops[i], deleted: true, updatedAt: Date.now(), device: DEVICE }; await DB.put(S.ops[i]); Sync.soon(); renderPockets();
+  });
+}
+function pocketRow(p) {
+  const k = POCKET_KINDS[p.kind] || POCKET_KINDS.flexible;
+  const neg = p.bal < 0;
+  const detail = p.linkSavings ? 'накопительные счета · пополняется переводом на депозит'
+    : p.kind === 'buffer' ? `цель: ${money(0.1 * pocketState(S.month).planTotal)} (10% плана)`
+    : `в этом месяце: +${money(Math.max(0, p.inM))} · потрачено ${money(p.spentM)} · план ${money(p.plan)}${p.kind === 'flexible' ? ' · остаток вернётся в «Свободно» 1-го' : ''}`;
+  return `<div class="row" style="display:block"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">${k.i} ${esc(p.name)}</span><b class="${neg ? 'neg' : ''}">${money(p.bal)}</b></div>
+    <div class="sub">${k.l} · ${detail}</div>
+    ${neg && !p.linkSavings ? `<div class="err">Перерасход ${money(-p.bal)} <button class="btn small" data-cover="${esc(p.name)}" style="margin:4px 0 0">Покрыть</button></div>` : ''}</div>`;
+}
+function renderPlanFact() {
   const b = budget(S.month);
-  $('#view').innerHTML = `
+  $('#view').innerHTML = budgetSeg() + `
   <div class="cards"><div class="kpi lilac"><div class="l">План</div><div class="v">${money(b.plan)}</div></div>
   <div class="kpi powder"><div class="l">Факт</div><div class="v">${money(b.fact)}</div></div>
   <div class="kpi ${b.diff < 0 ? 'powder' : 'green'}"><div class="l">${b.diff < 0 ? 'Перерасход' : 'Экономия'}</div><div class="v ${b.diff < 0 ? 'neg' : ''}">${money(Math.abs(b.diff))}</div></div>
@@ -402,6 +567,7 @@ function renderBudget() {
     if (v !== base) S.cfg.plans.push({ month: S.month, cat, sub, amount: v });
     await saveCfg(); toast(`План «${sub}» на ${mlabel(S.month)}: ${money(v)}`); renderBudget();
   }));
+  bindBudgetSeg();
 }
 
 // ---------- Ещё: счета, категории, люди, данные ----------
@@ -450,9 +616,17 @@ function renderMore() {
     <p style="margin:4px 0">Не знаешь точно — ставь примерно. Через месяц учёта увидишь реальные цифры и поправишь.</p>
   </div></details>
   ${S.cfg.exp.map((c, ci) => `<details class="card"><summary>${esc(c.cat)} <span class="sub" style="float:right">${money(c.subs.reduce((a, s) => a + (+s.base || 0), 0))}</span></summary>
+    <label class="f">Карман этой категории</label><select class="in" data-catpocket="${ci}">${pockets().filter(p => !p.linkSavings).map(p => `<option value="${esc(p.name)}" ${p.name === pocketOfCat(c.cat) ? 'selected' : ''}>${esc(POCKET_KINDS[p.kind].i + ' ' + p.name)}</option>`).join('')}</select>
     <table class="t"><tr><th>Подкатегория</th><th>План в месяц</th></tr>${c.subs.map((s, si) => `<tr><td>${esc(s.name)}<div class="sub">${esc(s.oblig)} · ${esc(s.period)}</div></td><td><input class="mini" data-base="${ci}|${si}" value="${s.base || ''}" inputmode="numeric" placeholder="0"></td></tr>`).join('')}</table>
     <div class="grid2" style="margin:8px 0"><input class="in" id="ns${ci}" placeholder="Новая подкатегория"><button class="btn small" data-addsub="${ci}">+ Добавить</button></div></details>`).join('')}
   <div class="card"><div class="grid2" style="margin:8px 0"><input class="in" id="newCat" placeholder="Новая категория расходов"><button class="btn small" id="addCat">+ Категория</button></div></div>
+  <h2>Карманы</h2>
+  <p class="muted">Название и тип каждого кармана. Какая категория в каком кармане — выбирается внутри категории выше. Подробно — «Бюджет → Карманы → Как работают карманы?».</p>
+  <div class="card">${pockets().map((p, i) => `<div class="row" style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px">
+    <input class="in" data-pk="${i}" data-k="name" value="${esc(p.name)}" ${p.linkSavings ? 'disabled' : ''}>
+    <select class="in" data-pk="${i}" data-k="kind" ${p.linkSavings ? 'disabled' : ''}>${Object.entries(POCKET_KINDS).filter(([k]) => p.linkSavings || k !== 'protected').map(([k, v]) => `<option value="${k}" ${k === p.kind ? 'selected' : ''}>${v.i} ${v.l}</option>`).join('')}</select>
+    ${p.linkSavings ? '<span></span>' : `<button class="btn small light" data-delpk="${i}" style="margin:0">✕</button>`}</div>`).join('')}
+    <div class="grid2" style="margin:8px 0"><input class="in" id="newPocket" placeholder="Новый карман"><button class="btn small" id="addPocket">+ Карман</button></div></div>
   <h2>Люди</h2>
   <p class="muted">Роль выбери из списка или «✎ Своя роль…». Удалить можно того, с кем нет операций.</p>
   <div class="card">${S.cfg.people.map((p, i) => `<div class="row" style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px">
@@ -507,6 +681,28 @@ function renderMore() {
   document.querySelectorAll('[data-base]').forEach(inp => inp.addEventListener('change', async () => { const [ci, si] = inp.dataset.base.split('|').map(Number); S.cfg.exp[ci].subs[si].base = num(inp.value); await saveCfg(); toast('План сохранён'); }));
   document.querySelectorAll('[data-addsub]').forEach(btn => btn.onclick = async () => { const ci = +btn.dataset.addsub, v = $('#ns' + ci).value.trim(); if (!v) return; const c = S.cfg.exp[ci]; if (c.subs.some(s => s.name === v)) return toast('Уже есть'); c.subs.splice(c.subs.length - 1, 0, { name: v, oblig: 'Важный', char: 'Переменный', period: 'Ежемесячный', base: 0 }); await saveCfg(); renderMore(); });
   $('#addCat').onclick = async () => { const v = $('#newCat').value.trim(); if (!v || S.cfg.exp.some(c => c.cat === v)) return; S.cfg.exp.push({ cat: v, pocket: 'Повседневные расходы', subs: [{ name: 'Другое', oblig: 'Необязательный', char: 'Переменный', period: 'Нерегулярный', base: 0 }] }); await saveCfg(); renderMore(); };
+  document.querySelectorAll('[data-catpocket]').forEach(sel => sel.addEventListener('change', async () => { S.cfg.exp[+sel.dataset.catpocket].pocket = sel.value; await saveCfg(); toast('Карман категории: ' + sel.value); }));
+  const editPockets = async fn => { const list = JSON.parse(JSON.stringify(pockets())); const r = await fn(list); if (r === false) return renderMore(); S.cfg.pockets = list; await saveCfg(); renderMore(); };
+  document.querySelectorAll('[data-pk]').forEach(inp => inp.addEventListener('change', () => editPockets(async list => {
+    const p = list[+inp.dataset.pk];
+    if (inp.dataset.k === 'kind') { p.kind = inp.value; toast('Тип: ' + POCKET_KINDS[p.kind].l); return; }
+    const v = inp.value.trim(), old = p.name;
+    if (!v || list.some(x => x !== p && x.name === v)) { toast('Такое имя уже есть или пустое'); return false; }
+    p.name = v;
+    for (const c of S.cfg.exp) if (c.pocket === old) c.pocket = v;
+    for (const o of S.ops) if (isPocketOp(o) && (o.from === old || o.to === old)) { if (o.from === old) o.from = v; if (o.to === old) o.to = v; o.updatedAt = Date.now(); await DB.put(o); }
+    toast('Сохранено');
+  })));
+  document.querySelectorAll('[data-delpk]').forEach(btn => btn.onclick = () => editPockets(async list => {
+    const p = list[+btn.dataset.delpk];
+    if (S.cfg.exp.some(c => c.pocket === p.name) || live().some(o => isPocketOp(o) && (o.from === p.name || o.to === p.name))) { toast('В этом кармане есть категории или деньги — сначала перенеси их, или переименуй карман'); return false; }
+    if (!confirm('Удалить карман «' + p.name + '»?')) return false;
+    list.splice(+btn.dataset.delpk, 1);
+  }));
+  $('#addPocket').onclick = () => editPockets(async list => {
+    const v = $('#newPocket').value.trim(); if (!v || list.some(p => p.name === v)) return false;
+    list.splice(list.findIndex(p => p.kind === 'buffer'), 0, { name: v, kind: 'saving' }); toast('Карман добавлен (накопительный — тип можно поменять)');
+  });
   document.querySelectorAll('[data-person-i]').forEach(inp => inp.addEventListener('change', async () => {
     const p = S.cfg.people[+inp.dataset.personI], v = inp.value.trim();
     if (inp.dataset.k === 'role') {
@@ -559,7 +755,7 @@ function download(name, text, type) { const a = document.createElement('a'); a.h
 function exportCsv() {
   const head = ['Дата', 'Тип', 'Счёт', 'Валюта', 'Категория', 'Подкатегория', 'Сумма', 'Курс', 'Сумма в ' + baseCur(), 'Получила (обмен)', 'Человек', 'Получатель', 'Комментарий'];
   const dec = v => (v === '' || v === undefined || v === null) ? '' : String(r2(v)).replace('.', ',');
-  const rows = live().sort((a, b) => a.date.localeCompare(b.date)).map(o => [o.date.split('-').reverse().join('.'), o.type, o.account, curOf(o.account), o.cat, o.sub, dec(o.amount), o.rate ? String(o.rate).replace('.', ',') : '', TYPE[o.type] && !TYPE[o.type].to ? dec(opBase(o)) : '', o.amountTo ? dec(o.amountTo) + ' ' + curOf(o.to) : '', o.person, o.to, o.comment]);
+  const rows = live().filter(o => !isPocketOp(o)).sort((a, b) => a.date.localeCompare(b.date)).map(o => [o.date.split('-').reverse().join('.'), o.type, o.account, curOf(o.account), o.cat, o.sub, dec(o.amount), o.rate ? String(o.rate).replace('.', ',') : '', TYPE[o.type] && !TYPE[o.type].to ? dec(opBase(o)) : '', o.amountTo ? dec(o.amountTo) + ' ' + curOf(o.to) : '', o.person, o.to, o.comment]);
   const csv = '﻿' + [head, ...rows].map(r => r.map(x => '"' + String(x ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
   download(`операции-${today()}.csv`, csv, 'text/csv');
 }
