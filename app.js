@@ -318,11 +318,10 @@ function renderMore() {
     <div class="grid2" style="margin:8px 0"><input class="in" id="ns${ci}" placeholder="Новая подкатегория"><button class="btn small" data-addsub="${ci}">+ Добавить</button></div></details>`).join('')}
   <div class="card"><div class="grid2" style="margin:8px 0"><input class="in" id="newCat" placeholder="Новая категория расходов"><button class="btn small" id="addCat">+ Категория</button></div></div>
   <h2>Люди</h2>
-  <p class="muted">Роль выбери из списка или впиши свою. Удалить можно того, с кем нет операций.</p>
-  <datalist id="roles">${['Семья', 'Друзья', 'Отношения', 'Банк', 'Работа', 'Учёба', 'Другое'].map(r => `<option value="${r}">`).join('')}</datalist>
+  <p class="muted">Роль выбери из списка или «✎ Своя роль…». Удалить можно того, с кем нет операций.</p>
   <div class="card">${S.cfg.people.map((p, i) => `<div class="row" style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px">
     <input class="in" data-person-i="${i}" data-k="name" value="${esc(p.name)}">
-    <input class="in" data-person-i="${i}" data-k="role" value="${esc(p.role)}" list="roles" placeholder="Роль">
+    <select class="in" data-person-i="${i}" data-k="role">${roleOptions(p.role)}</select>
     <button class="btn small light" data-delperson="${i}" style="margin:0" aria-label="Удалить">✕</button></div>`).join('')}
     <div class="grid2" style="margin:8px 0"><input class="in" id="newPerson" placeholder="Имя"><button class="btn small" id="addPerson">+ Человек</button></div></div>
   <h2>Данные</h2>
@@ -361,7 +360,11 @@ function renderMore() {
   $('#addCat').onclick = async () => { const v = $('#newCat').value.trim(); if (!v || S.cfg.exp.some(c => c.cat === v)) return; S.cfg.exp.push({ cat: v, pocket: 'Повседневные расходы', subs: [{ name: 'Другое', oblig: 'Необязательный', char: 'Переменный', period: 'Нерегулярный', base: 0 }] }); await saveCfg(); renderMore(); };
   document.querySelectorAll('[data-person-i]').forEach(inp => inp.addEventListener('change', async () => {
     const p = S.cfg.people[+inp.dataset.personI], v = inp.value.trim();
-    if (inp.dataset.k === 'role') { p.role = v || 'Другое'; await saveCfg(); toast('Роль сохранена'); return; }
+    if (inp.dataset.k === 'role') {
+      let role = v;
+      if (role === '__custom') { role = (prompt('Своя роль (например, «Одногруппники»):', '') || '').trim(); if (!role) return renderMore(); }
+      p.role = role || 'Другое'; await saveCfg(); toast('Роль: ' + p.role); return renderMore();
+    }
     if (!v || S.cfg.people.some(x => x !== p && x.name === v)) { toast('Такое имя уже есть или пустое'); return renderMore(); }
     const old = p.name; p.name = v;
     for (const o of S.ops) if (o.person === old) { o.person = v; o.updatedAt = Date.now(); await DB.put(o); }
@@ -388,6 +391,11 @@ function renderMore() {
       S.ops = await DB.all(); toast('Восстановлено'); Sync.soon(); renderMore();
     } catch (err) { toast('Не удалось прочитать файл: ' + err.message); }
   };
+}
+const ROLES = ['Семья', 'Друзья', 'Отношения', 'Банк', 'Работа', 'Учёба', 'Другое'];
+function roleOptions(cur) {
+  const list = [...new Set([...ROLES, ...S.cfg.people.map(p => p.role).filter(Boolean)])];
+  return list.map(r => `<option ${r === cur ? 'selected' : ''}>${esc(r)}</option>`).join('') + '<option value="__custom">✎ Своя роль…</option>';
 }
 function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
 function exportCsv() {
