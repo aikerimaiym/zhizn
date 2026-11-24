@@ -280,7 +280,12 @@ function renderBudget() {
   <div class="kpi powder"><div class="l">Факт</div><div class="v">${money(b.fact)}</div></div>
   <div class="kpi ${b.diff < 0 ? 'powder' : 'green'}"><div class="l">${b.diff < 0 ? 'Перерасход' : 'Экономия'}</div><div class="v ${b.diff < 0 ? 'neg' : ''}">${money(Math.abs(b.diff))}</div></div>
   <div class="kpi blue"><div class="l">Исполнение</div><div class="v">${b.plan ? pct(b.fact / b.plan) : '–'}</div></div></div>
-  <p class="muted">План на месяц берётся из «План в месяц» (Ещё → Категории). Для особого месяца нажми на сумму плана подкатегории и введи другую — изменится только этот месяц.</p>
+  <details class="card" style="padding:4px 12px;margin-top:10px"><summary class="muted" style="font-weight:600">Откуда план и как его поменять?</summary>
+  <div class="muted" style="padding-bottom:8px">
+    <p style="margin:4px 0"><b>Обычный план</b> берётся из «Ещё → Категории → План в месяц» — средняя сумма, одна на все месяцы.</p>
+    <p style="margin:4px 0"><b>Только для этого месяца</b>: нажми на сумму в колонке «План» и впиши другую. Например, в декабре на подарки 40 000 вместо обычных 10 000 — остальные месяцы не изменятся.</p>
+    <p style="margin:4px 0">«Остаток» — сколько ещё можно потратить по плану; красным — перерасход.</p>
+  </div></details>
   ${b.cats.map(c => `<details class="card" ${c.fact ? 'open' : ''}><summary>${esc(c.cat)} <span class="sub" style="float:right">${money(c.fact)} / ${money(c.plan)}</span></summary>
     <table class="t"><tr><th>Подкатегория</th><th>План</th><th>Факт</th><th>Остаток</th></tr>
     ${c.subs.map(s => `<tr><td>${esc(s.name)}</td><td><input class="mini" data-plan="${esc(c.cat)}|${esc(s.name)}" value="${s.plan || ''}" inputmode="numeric" placeholder="0"></td><td>${s.fact ? money(s.fact) : '–'}</td><td class="${s.diff < 0 ? 'neg' : ''}">${s.plan || s.fact ? money(s.diff) : '–'}</td></tr>`).join('')}
@@ -312,7 +317,14 @@ function renderMore() {
     <div class="grid2"><input class="in" data-acc="${i}" data-k="name" value="${esc(a.name)}"><button class="btn small light" data-delacc="${i}">Убрать счёт</button></div></div>`).join('')}
     <button class="btn small" id="addAcc">+ Счёт</button></div>
   <h2>Категории и план в месяц</h2>
-  <p class="muted">«План в месяц» — сколько обычно тратишь на подкатегорию. Это база для бюджета каждого месяца.</p>
+  <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работает «План в месяц»?</summary>
+  <div class="muted" style="padding-bottom:8px">
+    <p style="margin:4px 0">Впиши, <b>сколько обычно тратишь</b> на подкатегорию <b>в среднем месяце</b>. Эта сумма сама становится планом <b>для каждого месяца</b> — заполнять заново не нужно.</p>
+    <p style="margin:4px 0">Пример: на кафе обычно уходит ~15 000 ₸ → пишешь 15 000. Каждый месяц приложение покажет: «осталось 2 700 ₸» или «перерасход».</p>
+    <p style="margin:4px 0">Заполняй только то, на что реально тратишь. Пусто — значит «не планирую». Траты раз в год (страховка, сезонная одежда) раздели на 12.</p>
+    <p style="margin:4px 0"><b>Особый месяц</b> (праздники, поездка) — меняется на вкладке «Бюджет»: выбери месяц стрелками и нажми на сумму плана. Изменится только этот месяц.</p>
+    <p style="margin:4px 0">Не знаешь точно — ставь примерно. Через месяц учёта увидишь реальные цифры и поправишь.</p>
+  </div></details>
   ${S.cfg.exp.map((c, ci) => `<details class="card"><summary>${esc(c.cat)} <span class="sub" style="float:right">${money(c.subs.reduce((a, s) => a + (+s.base || 0), 0))}</span></summary>
     <table class="t"><tr><th>Подкатегория</th><th>План в месяц</th></tr>${c.subs.map((s, si) => `<tr><td>${esc(s.name)}<div class="sub">${esc(s.oblig)} · ${esc(s.period)}</div></td><td><input class="mini" data-base="${ci}|${si}" value="${s.base || ''}" inputmode="numeric" placeholder="0"></td></tr>`).join('')}</table>
     <div class="grid2" style="margin:8px 0"><input class="in" id="ns${ci}" placeholder="Новая подкатегория"><button class="btn small" data-addsub="${ci}">+ Добавить</button></div></details>`).join('')}
