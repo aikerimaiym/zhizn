@@ -23,7 +23,11 @@ const DEVICE = (() => { try { let d = localStorage.getItem('zhizn-device'); if (
 function uid() { return (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)); }
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const money = n => (Math.round(n) || 0).toLocaleString('ru-RU') + ' ₸';
+// Деньги: до 2 знаков после запятой (тиыны), целые — без «,00»
+const r2 = n => Math.round((+n || 0) * 100) / 100;
+const money = n => { const v = r2(n); return v.toLocaleString('ru-RU', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }) + ' ₸'; };
+// Ввод чисел: понимает пробелы и запятую («1 234,56»)
+const num = s => { const v = parseFloat(String(s ?? '').replace(/\s/g, '').replace(',', '.')); return isFinite(v) ? r2(v) : 0; };
 const pct = x => (x === null || !isFinite(x)) ? '–' : Math.round(x * 100) + '%';
 const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 const mkey = date => (date || '').slice(0, 7);
@@ -142,7 +146,7 @@ function renderOverview() {
   const warns = [];
   if (errs) warns.push(['warn', `⚠ Операций с ошибками: ${errs} — открой «Историю», они не в итогах`]);
   over.forEach(c => warns.push(['warn', `⚠ Перерасход: ${c.cat} — ${money(c.fact - c.plan)} сверх плана`]));
-  S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && Math.round(+a.fact) !== Math.round(balances()[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${money(+a.fact)}, по учёту ${money(balances()[a.name])} — найди пропущенную операцию или внеси «Корректировку»`]));
+  S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && r2(+a.fact) !== r2(balances()[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${money(+a.fact)}, по учёту ${money(balances()[a.name])} — найди пропущенную операцию или внеси «Корректировку»`]));
   if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»']);
   if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»']);
   if (!warns.length) warns.push(['ok', '✓ Всё в порядке']);
@@ -236,7 +240,7 @@ function renderAdd() {
   $('#save').onclick = async () => {
     sync();
     const T2 = TYPE[d.type];
-    const op = { ...d, amount: Math.round(parseFloat(String(d.amount).replace(/\s/g, '').replace(',', '.')) * 100) / 100 };
+    const op = { ...d, amount: num(d.amount) };
     if (!T2.grp) { op.cat = ''; op.sub = ''; } if (!T2.person) op.person = ''; if (!T2.to) op.to = '';
     const err = validate(op); if (err) { $('#err').textContent = '⚠ ' + err; return; }
     const now = Date.now();
@@ -282,7 +286,7 @@ function renderBudget() {
     ${c.subs.map(s => `<tr><td>${esc(s.name)}</td><td><input class="mini" data-plan="${esc(c.cat)}|${esc(s.name)}" value="${s.plan || ''}" inputmode="numeric" placeholder="0"></td><td>${s.fact ? money(s.fact) : '–'}</td><td class="${s.diff < 0 ? 'neg' : ''}">${s.plan || s.fact ? money(s.diff) : '–'}</td></tr>`).join('')}
     </table></details>`).join('')}`;
   document.querySelectorAll('[data-plan]').forEach(inp => inp.addEventListener('change', async () => {
-    const [cat, sub] = inp.dataset.plan.split('|'); const v = +inp.value || 0;
+    const [cat, sub] = inp.dataset.plan.split('|'); const v = num(inp.value);
     S.cfg.plans = S.cfg.plans.filter(p => !(p.month === S.month && p.cat === cat && p.sub === sub));
     const base = planFor(S.month, cat, sub);
     if (v !== base) S.cfg.plans.push({ month: S.month, cat, sub, amount: v });
@@ -331,7 +335,7 @@ function renderMore() {
     const a = S.cfg.accounts[+inp.dataset.acc], k = inp.dataset.k;
     if (k === 'savings') a.savings = inp.checked;
     else if (k === 'name') { const old = a.name, nv = inp.value.trim(); if (!nv || S.cfg.accounts.some(x => x !== a && x.name === nv)) { toast('Такое имя уже есть'); return renderMore(); } a.name = nv; for (const o of S.ops) { let ch = false; if (o.account === old) { o.account = nv; ch = true; } if (o.to === old) { o.to = nv; ch = true; } if (ch) { o.updatedAt = Date.now(); await DB.put(o); } } }
-    else a[k] = inp.value === '' ? (k === 'fact' ? null : 0) : +inp.value.replace(/\s/g, '').replace(',', '.');
+    else a[k] = inp.value === '' ? (k === 'fact' ? null : 0) : num(inp.value);
     await saveCfg(); toast('Сохранено'); renderMore();
   }));
   $('#startDate').addEventListener('change', async e => {
@@ -347,7 +351,7 @@ function renderMore() {
     S.cfg.accounts.splice(+btn.dataset.delacc, 1); await saveCfg(); renderMore();
   });
   $('#addAcc').onclick = async () => { let n = 'Новый счёт', i = 2; while (S.cfg.accounts.some(a => a.name === n)) n = 'Новый счёт ' + i++; S.cfg.accounts.push({ name: n, type: 'Карта', savings: false, start: 0, fact: null }); await saveCfg(); renderMore(); };
-  document.querySelectorAll('[data-base]').forEach(inp => inp.addEventListener('change', async () => { const [ci, si] = inp.dataset.base.split('|').map(Number); S.cfg.exp[ci].subs[si].base = +inp.value || 0; await saveCfg(); toast('План сохранён'); }));
+  document.querySelectorAll('[data-base]').forEach(inp => inp.addEventListener('change', async () => { const [ci, si] = inp.dataset.base.split('|').map(Number); S.cfg.exp[ci].subs[si].base = num(inp.value); await saveCfg(); toast('План сохранён'); }));
   document.querySelectorAll('[data-addsub]').forEach(btn => btn.onclick = async () => { const ci = +btn.dataset.addsub, v = $('#ns' + ci).value.trim(); if (!v) return; const c = S.cfg.exp[ci]; if (c.subs.some(s => s.name === v)) return toast('Уже есть'); c.subs.splice(c.subs.length - 1, 0, { name: v, oblig: 'Важный', char: 'Переменный', period: 'Ежемесячный', base: 0 }); await saveCfg(); renderMore(); });
   $('#addCat').onclick = async () => { const v = $('#newCat').value.trim(); if (!v || S.cfg.exp.some(c => c.cat === v)) return; S.cfg.exp.push({ cat: v, pocket: 'Повседневные расходы', subs: [{ name: 'Другое', oblig: 'Необязательный', char: 'Переменный', period: 'Нерегулярный', base: 0 }] }); await saveCfg(); renderMore(); };
   $('#addPerson').onclick = async () => { const v = $('#newPerson').value.trim(); if (!v || S.cfg.people.some(p => p.name === v)) return; S.cfg.people.push({ name: v, role: 'Другое' }); await saveCfg(); renderMore(); };
