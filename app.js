@@ -78,6 +78,7 @@ const live = () => S.ops.filter(o => !o.deleted);
 // ---------- Проверка операции ----------
 function validate(o) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date || '')) return 'Укажи дату';
+  if (o.date < S.cfg.startDate) return 'Дата раньше начала учёта (' + S.cfg.startDate.split('-').reverse().join('.') + ')';
   const T = TYPE[o.type]; if (!T) return 'Выбери тип';
   if (!(o.amount > 0)) return 'Сумма должна быть больше нуля';
   if (!S.cfg.accounts.some(a => a.name === o.account)) return 'Выбери счёт';
@@ -294,6 +295,9 @@ function renderMore() {
   const b = balances();
   $('#view').innerHTML = `
   <h2>Счета</h2>
+  <div class="card" style="padding:10px 12px"><label class="f" style="margin-top:0">Дата начала учёта</label>
+    <input class="in" type="date" id="startDate" value="${S.cfg.startDate}">
+    <div class="muted" style="margin-top:4px">Начальные остатки вводятся на эту дату. Операции раньше неё не считаются — чтобы деньги не учлись дважды.</div></div>
   <div class="card">${S.cfg.accounts.map((a, i) => `<div class="row" style="display:block">
     <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${money(b[a.name])}</span></div>
     <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
@@ -328,6 +332,12 @@ function renderMore() {
     else a[k] = inp.value === '' ? (k === 'fact' ? null : 0) : +inp.value.replace(/\s/g, '').replace(',', '.');
     await saveCfg(); toast('Сохранено'); renderMore();
   }));
+  $('#startDate').addEventListener('change', async e => {
+    const v = e.target.value; if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+    const early = live().filter(o => o.date < v).length;
+    if (early && !confirm(`Операций раньше ${v.split('-').reverse().join('.')}: ${early}. Они перестанут учитываться. Продолжить?`)) return renderMore();
+    S.cfg.startDate = v; await saveCfg(); S.month = mkey(v > today() ? v : today()); toast('Дата начала учёта: ' + v.split('-').reverse().join('.')); renderMore();
+  });
   document.querySelectorAll('[data-delacc]').forEach(btn => btn.onclick = async () => {
     const a = S.cfg.accounts[+btn.dataset.delacc];
     if (live().some(o => o.account === a.name || o.to === a.name)) { toast('По этому счёту есть операции — убрать нельзя'); return; }
