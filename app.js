@@ -318,7 +318,12 @@ function renderMore() {
     <div class="grid2" style="margin:8px 0"><input class="in" id="ns${ci}" placeholder="Новая подкатегория"><button class="btn small" data-addsub="${ci}">+ Добавить</button></div></details>`).join('')}
   <div class="card"><div class="grid2" style="margin:8px 0"><input class="in" id="newCat" placeholder="Новая категория расходов"><button class="btn small" id="addCat">+ Категория</button></div></div>
   <h2>Люди</h2>
-  <div class="card">${S.cfg.people.map(p => `<div class="row"><span>${esc(p.name)}</span><span class="sub">${esc(p.role)}</span></div>`).join('')}
+  <p class="muted">Роль выбери из списка или впиши свою. Удалить можно того, с кем нет операций.</p>
+  <datalist id="roles">${['Семья', 'Друзья', 'Отношения', 'Банк', 'Работа', 'Учёба', 'Другое'].map(r => `<option value="${r}">`).join('')}</datalist>
+  <div class="card">${S.cfg.people.map((p, i) => `<div class="row" style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px">
+    <input class="in" data-person-i="${i}" data-k="name" value="${esc(p.name)}">
+    <input class="in" data-person-i="${i}" data-k="role" value="${esc(p.role)}" list="roles" placeholder="Роль">
+    <button class="btn small light" data-delperson="${i}" style="margin:0" aria-label="Удалить">✕</button></div>`).join('')}
     <div class="grid2" style="margin:8px 0"><input class="in" id="newPerson" placeholder="Имя"><button class="btn small" id="addPerson">+ Человек</button></div></div>
   <h2>Данные</h2>
   <div class="card" style="padding:12px">
@@ -354,6 +359,20 @@ function renderMore() {
   document.querySelectorAll('[data-base]').forEach(inp => inp.addEventListener('change', async () => { const [ci, si] = inp.dataset.base.split('|').map(Number); S.cfg.exp[ci].subs[si].base = num(inp.value); await saveCfg(); toast('План сохранён'); }));
   document.querySelectorAll('[data-addsub]').forEach(btn => btn.onclick = async () => { const ci = +btn.dataset.addsub, v = $('#ns' + ci).value.trim(); if (!v) return; const c = S.cfg.exp[ci]; if (c.subs.some(s => s.name === v)) return toast('Уже есть'); c.subs.splice(c.subs.length - 1, 0, { name: v, oblig: 'Важный', char: 'Переменный', period: 'Ежемесячный', base: 0 }); await saveCfg(); renderMore(); });
   $('#addCat').onclick = async () => { const v = $('#newCat').value.trim(); if (!v || S.cfg.exp.some(c => c.cat === v)) return; S.cfg.exp.push({ cat: v, pocket: 'Повседневные расходы', subs: [{ name: 'Другое', oblig: 'Необязательный', char: 'Переменный', period: 'Нерегулярный', base: 0 }] }); await saveCfg(); renderMore(); };
+  document.querySelectorAll('[data-person-i]').forEach(inp => inp.addEventListener('change', async () => {
+    const p = S.cfg.people[+inp.dataset.personI], v = inp.value.trim();
+    if (inp.dataset.k === 'role') { p.role = v || 'Другое'; await saveCfg(); toast('Роль сохранена'); return; }
+    if (!v || S.cfg.people.some(x => x !== p && x.name === v)) { toast('Такое имя уже есть или пустое'); return renderMore(); }
+    const old = p.name; p.name = v;
+    for (const o of S.ops) if (o.person === old) { o.person = v; o.updatedAt = Date.now(); await DB.put(o); }
+    await saveCfg(); toast('Сохранено'); renderMore();
+  }));
+  document.querySelectorAll('[data-delperson]').forEach(btn => btn.onclick = async () => {
+    const p = S.cfg.people[+btn.dataset.delperson];
+    if (live().some(o => o.person === p.name)) { toast('С этим человеком есть операции — удалить нельзя, можно переименовать'); return; }
+    if (!confirm('Удалить «' + p.name + '» из списка?')) return;
+    S.cfg.people.splice(+btn.dataset.delperson, 1); await saveCfg(); renderMore();
+  });
   $('#addPerson').onclick = async () => { const v = $('#newPerson').value.trim(); if (!v || S.cfg.people.some(p => p.name === v)) return; S.cfg.people.push({ name: v, role: 'Другое' }); await saveCfg(); renderMore(); };
   $('#syncNow').onclick = () => Sync.run(true).then(n => { toast(n ? `Синхронизировано: подтянуто изменений — ${n}` : 'Синхронизировано ✓'); renderMore(); }).catch(e => { toast('⚠ ' + e.message); renderMore(); });
   if ($('#syncOff')) $('#syncOff').onclick = () => { if (!confirm('Отключить синхронизацию на этом устройстве? Данные останутся и здесь, и в Google Диске.')) return; Sync.off(); renderMore(); };
