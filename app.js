@@ -295,7 +295,12 @@ function effectiveRate(a) {
 }
 const fmtPct = x => (+x.toFixed(2)).toLocaleString('ru-RU') + '%';
 function addMonthsIso(s, m) { const d = dParse(s), day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + m); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return dIso(d); }
-const depEnd = a => a.openDate && +a.termMonths > 0 ? addMonthsIso(a.openDate, +a.termMonths) : '';
+// Срок: число + единица (месяцы/дни). Дата окончания по договору (endDate) главнее расчёта — банки считают по-своему.
+const termN = a => +(a.termN ?? a.termMonths) || 0;
+const termUnit = a => a.termUnit || 'm';
+const termFrom = (a, start) => termN(a) ? (termUnit(a) === 'd' ? dAdd(start, termN(a)) : addMonthsIso(start, termN(a))) : '';
+const depEnd = a => a.endDate || (a.openDate ? termFrom(a, a.openDate) : '');
+const termLabel = a => termN(a) ? termN(a) + (termUnit(a) === 'd' ? ' дн.' : ' мес.') : 'бессрочный';
 const interestMonthly = (a, bal) => { const n = nominalRate(a); return (n > 0 && bal > 0) ? r2(bal * n / 100 / 12) : 0; };
 function projectDeposit(a, bal, months) {
   const r = nominalRate(a) / 100 / 12; if (!(bal > 0) || !r || !(months > 0)) return r2(bal || 0);
@@ -316,11 +321,13 @@ function depositBlock(a, i, bal) {
     <div class="grid2"><div><label class="f">Номинальная ставка, %</label><input class="in" data-acc="${i}" data-k="rate" inputmode="decimal" value="${a.rate || ''}" placeholder="например, 14"></div>
       <div><label class="f">Эффективная (ГЭСВ), %</label><input class="in" data-acc="${i}" data-k="rateEff" inputmode="decimal" value="${a.rateEff || ''}" placeholder="например, 14,93"></div></div>
     <div class="grid2"><div><label class="f">Дата открытия</label><input class="in" type="date" data-acc="${i}" data-k="openDate" value="${a.openDate || ''}"></div>
-      <div><label class="f">Срок, месяцев</label><input class="in" data-acc="${i}" data-k="termMonths" inputmode="numeric" value="${a.termMonths || ''}" placeholder="пусто = бессрочный"></div></div>
+      <div><label class="f">Срок</label><div class="grid2" style="gap:6px"><input class="in" data-acc="${i}" data-k="termN" inputmode="numeric" value="${termN(a) || ''}" placeholder="пусто = без срока"><select class="in" data-acc="${i}" data-k="termUnit"><option value="m" ${termUnit(a) === 'm' ? 'selected' : ''}>мес.</option><option value="d" ${termUnit(a) === 'd' ? 'selected' : ''}>дн.</option></select></div></div></div>
+    <label class="f">Дата окончания по договору <span class="muted">(если отличается от расчёта — она главнее)</span></label><input class="in" type="date" data-acc="${i}" data-k="endDate" value="${a.endDate || ''}">
+    <label class="f"><input type="checkbox" data-acc="${i}" data-k="autoRenew" ${a.autoRenew ? 'checked' : ''}> автоматическое продление (пролонгация)</label>
     <label class="f"><input type="checkbox" data-acc="${i}" data-k="capitalize" ${capOn(a) ? 'checked' : ''}> проценты прибавляются к вкладу (капитализация)</label>
     ${derived.length ? `<div class="muted">${derived.join(' · ')}</div>` : ''}
     ${check > 0.3 ? `<div class="err">Ставки не сходятся: при номинальной ${fmtPct(+a.rate)} и ежемесячной капитализации эффективная ≈ ${fmtPct((Math.pow(1 + a.rate / 1200, 12) - 1) * 100)}. Проверь в договоре или в Kaspi.</div>` : ''}
-    ${end ? `<div class="muted">Окончание: <b>${end.split('-').reverse().join('.')}</b>${end >= t ? ` · осталось ${left} дн.` : ' · срок закончился'}</div>` : (a.openDate ? '<div class="muted">Бессрочный (срок не указан)</div>' : '')}
+    ${end ? `<div class="muted">Окончание: <b>${end.split('-').reverse().join('.')}</b>${a.endDate ? ' (по договору)' : ''}${end >= t ? ` · осталось ${left} дн.` : ' · срок закончился'}${a.autoRenew ? ' · продлится автоматически' : ''}${a.openDate && end ? ` · ${dDiff(end, a.openDate)} дн. от открытия` : ''}</div>` : (a.openDate ? '<div class="muted">Без срока</div>' : '')}
     ${n > 0 ? `<div class="muted">≈ +${fmt(interestMonthly(a, bal), c)} в месяц${end && end >= t && monthsLeft ? ` · к окончанию срока ≈ ${fmt(projectDeposit(a, bal, monthsLeft), c)}` : ''}${end && monthsLeft < 12 ? ' · дальше — по условиям продления' : ` · через 12 мес ≈ ${fmt(projectDeposit(a, bal, 12), c)}`} (без пополнений, приблизительно)</div>` : ''}
     <details><summary class="muted" style="font-weight:600">Номинальная и эффективная — в чём разница?</summary><div class="muted">
       <p style="margin:4px 0"><b>Номинальная</b> — ставка «на бумаге». По ней банк начисляет проценты: в месяц ≈ остаток × ставка / 12.</p>
@@ -334,7 +341,7 @@ function interestPayments() {
   return S.cfg.accounts.filter(a => a.savings && nominalRate(a) > 0 && !isMetal(accCur(a))).map(a => ({
     id: 'int:' + a.name, name: 'Проценты: ' + a.name, kind: 'in', auto: true, toSavings: true,
     amount: r2(toBase(interestMonthly(a, b[a.name]), accCur(a))), account: a.name, cat: 'Банк', sub: 'Проценты по депозиту', person: '',
-    freq: 'month', day: +a.payDay || 1, start: S.cfg.startDate, end: depEnd(a), active: true,
+    freq: 'month', day: +a.payDay || 1, start: S.cfg.startDate, end: a.autoRenew ? '' : depEnd(a), active: true,
   }));
 }
 const allPayments = () => [...payments(), ...interestPayments()];
@@ -437,7 +444,7 @@ function renderOverview() {
   const now = balances();
   S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && a.fact !== undefined && r2(+a.fact) !== r2(now[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${fmt(+a.fact, accCur(a))}, по учёту ${fmt(now[a.name], accCur(a))} — найди пропущенную операцию или внеси «Корректировку»`]));
   if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`]);
-  S.cfg.accounts.filter(a => depEnd(a) && dDiff(depEnd(a), today()) >= 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`]));
+  S.cfg.accounts.filter(a => depEnd(a) && dDiff(depEnd(a), today()) > 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', a.autoRenew ? `🔄 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} и продлится автоматически — в этот день проверь новую ставку` : `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`]));
   if (allPayments().length) {
     const pf = payForecast(), soon = payCalendar(today(), dAdd(today(), 3)).filter(r => r.p.kind === 'out' && r.status !== 'paid');
     pf.overdue.forEach(r => warns.push(['warn', `⚠ Просрочен платёж «${r.p.name}» (${dHuman(r.due)}) — ${money(r.left)}`]));
@@ -452,7 +459,7 @@ function renderOverview() {
   if (!warns.length) warns.push(['ok', '✓ Всё в порядке']);
   const topCats = bud.cats.filter(c => c.plan || c.fact).sort((a, b) => b.fact - a.fact);
   const people = S.cfg.people.map(p => ({ p: p.name, v: live().filter(o => o.person === p.name && mkey(o.date) === m && !validate(o) && TYPE[o.type].sign > 0).reduce((s, o) => s + opBase(o), 0) })).filter(x => x.v);
-  $('#view').innerHTML = `
+  $('#view').innerHTML = maturityHtml() + `
   <div class="cards">
     <div class="kpi blue"><div class="l">Всего денег</div><div class="v">${money(total)}</div><div class="s">на конец месяца</div></div>
     <div class="kpi lilac"><div class="l">Свободно</div><div class="v ${ps.free < 0 ? 'neg' : ''}">${money(ps.free)}</div><div class="s">не в карманах · в карманах ${money(ps.inPockets)}</div></div>
@@ -473,6 +480,57 @@ function renderOverview() {
   <div class="card">${S.cfg.accounts.map(a => accRow(a, b[a.name])).join('')}</div>
   ${S.cfg.accounts.some(a => accCur(a) !== baseCur()) ? `<p class="muted">Счета в другой валюте и металлы пересчитаны в ${CUR[baseCur()].sym} по текущему курсу${Rates.data ? ' (' + esc(Rates.data.src) + ', ' + esc(Rates.data.date) + ')' : ''}.</p>` : ''}
   ${people.length ? `<h2>Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
+  bindMaturity();
+}
+// ---------- Окончание срока депозита: «что делать со средствами?» ----------
+const matSnoozed = a => { try { return localStorage.getItem('zhizn-mat-' + a.name) === today(); } catch (e) { return false; } };
+const maturityDue = () => S.cfg.accounts.filter(a => a.savings && depEnd(a) && depEnd(a) <= today() && a.handledEnd !== depEnd(a) && !matSnoozed(a));
+// Следующий срок при продлении: тот же срок от даты окончания (по дням, если срок задан датой по договору)
+const nextEnd = a => { const end = depEnd(a); return termN(a) ? termFrom(a, end) : (a.openDate ? dAdd(end, dDiff(end, a.openDate)) : ''); };
+function maturityHtml() {
+  return maturityDue().map(a => {
+    const end = depEnd(a), c = accCur(a), bal = balances()[a.name], ui = (S.matUI && S.matUI.acc === a.name) ? S.matUI.mode : '';
+    const same = S.cfg.accounts.filter(x => x.name !== a.name && accCur(x) === c);
+    const head = a.autoRenew
+      ? `🔄 <b>Срок депозита «${esc(a.name)}» закончился ${end.split('-').reverse().join('.')}.</b> Банк продлевает его автоматически. Проверь новые условия: после продления ставка и дата окончания могут быть другими.`
+      : `🏦 <b>Срок депозита «${esc(a.name)}» закончился ${end.split('-').reverse().join('.')}.</b> На нём ${fmt(bal, c)}. Что делать со средствами?`;
+    const renewForm = `<div class="grid2"><div><label class="f">Новая дата окончания (как в банке)</label><input class="in" type="date" id="matEnd" value="${nextEnd(a)}"></div>
+      <div><label class="f">Номинальная, %</label><input class="in" id="matRate" inputmode="decimal" value="${a.rate || ''}"></div></div>
+      <label class="f">Эффективная (ГЭСВ), %</label><input class="in" id="matEff" inputmode="decimal" value="${a.rateEff || ''}">
+      <button class="btn small" data-mat="renewOk|${esc(a.name)}">✓ ${a.autoRenew ? 'Подтвердить продление' : 'Продлить'}</button>`;
+    const moveForm = same.length ? `<div class="grid2"><div><label class="f">На счёт</label><select class="in" id="matTo">${same.map(x => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join('')}</select></div>
+      <div><label class="f">Сумма</label><input class="in" id="matAmt" inputmode="decimal" value="${r2(bal)}"></div></div>
+      <button class="btn small" data-mat="moveOk|${esc(a.name)}">Перевести</button>` : `<div class="muted">Нет другого счёта в этой валюте — добавь его в «Ещё → Счета».</div>`;
+    return `<div class="card" style="padding:10px 12px;border:2px solid var(--lilac2)">${head}
+      <div class="seg" style="margin-top:8px">
+        <button class="chip ${ui === 'renew' ? 'on' : ''}" data-mat="renew|${esc(a.name)}">${a.autoRenew ? '✓ Продлён — подтвердить' : '🔄 Продлить'}</button>
+        <button class="chip ${ui === 'move' ? 'on' : ''}" data-mat="move|${esc(a.name)}">💳 Перевести на счёт</button>
+        ${a.autoRenew ? '' : `<button class="chip" data-mat="open|${esc(a.name)}">Оставить без срока</button>`}
+        <button class="chip" data-mat="later|${esc(a.name)}">Позже</button></div>
+      ${ui === 'renew' ? renewForm : ui === 'move' ? moveForm : ''}</div>`;
+  }).join('');
+}
+function bindMaturity() {
+  document.querySelectorAll('[data-mat]').forEach(btn => btn.onclick = async () => {
+    const [act, name] = btn.dataset.mat.split('|'), a = S.cfg.accounts.find(x => x.name === name); if (!a) return;
+    const end = depEnd(a);
+    if (act === 'renew' || act === 'move') { S.matUI = { acc: name, mode: act }; return renderOverview(); }
+    if (act === 'later') { try { localStorage.setItem('zhizn-mat-' + name, today()); } catch (e) {} S.matUI = null; toast('Напомню завтра'); return renderOverview(); }
+    if (act === 'open') { a.termN = null; delete a.termMonths; a.endDate = ''; a.handledEnd = end; await saveCfg(); S.matUI = null; toast('Депозит без срока'); return renderOverview(); }
+    if (act === 'renewOk') {
+      const ne = $('#matEnd').value; if (!ne || ne <= end) { toast('⚠ Новая дата окончания должна быть позже ' + end.split('-').reverse().join('.')); return; }
+      const nr = $('#matRate').value.trim(), ef = $('#matEff').value.trim();
+      a.openDate = end; a.endDate = ne; a.handledEnd = end;
+      a.rate = nr ? num(nr) : a.rate; a.rateEff = ef ? num(ef) : a.rateEff;
+      await saveCfg(); S.matUI = null; toast('Депозит продлён до ' + ne.split('-').reverse().join('.')); return renderOverview();
+    }
+    if (act === 'moveOk') {
+      const to = $('#matTo').value, amount = num($('#matAmt').value); if (!(amount > 0)) { toast('⚠ Укажи сумму'); return; }
+      const now = Date.now(), op = { id: uid(), type: 'Перевод между счетами', date: today(), account: name, to, amount, cat: '', sub: '', person: '', comment: 'окончание депозита', rate: 0, amountTo: 0, createdAt: now, updatedAt: now, device: DEVICE, deleted: false };
+      const err = validate(op); if (err) { toast('⚠ ' + err); return; }
+      S.ops.push(op); await DB.put(op); a.handledEnd = end; await saveCfg(); S.matUI = null; toast(`Переведено ${fmt(amount, accCur(a))} → ${to}`); return renderOverview();
+    }
+  });
 }
 // Строка счёта: остаток в его валюте, для чужой валюты — «≈ в основной»
 function accRow(a, v) {
@@ -888,8 +946,9 @@ function renderMore() {
     if (k === 'savings') a.savings = inp.checked;
     else if (k === 'capitalize') a.capitalize = inp.checked;
     else if (k === 'payDay') a.payDay = Math.min(31, Math.max(0, Math.round(num(inp.value)))) || null;
-    else if (k === 'openDate' || k === 'depType') a[k] = inp.value || '';
-    else if (k === 'termMonths') a.termMonths = Math.max(0, Math.round(num(inp.value))) || null;
+    else if (k === 'openDate' || k === 'depType' || k === 'endDate' || k === 'termUnit') a[k] = inp.value || '';
+    else if (k === 'autoRenew') a.autoRenew = inp.checked;
+    else if (k === 'termN') { a.termN = Math.max(0, Math.round(num(inp.value))) || null; delete a.termMonths; }
     else if (k === 'cur') {
       if (live().some(o => o.account === a.name || o.to === a.name)) { toast('По счёту уже есть операции — валюту не поменять. Создай новый счёт в нужной валюте'); return renderMore(); }
       a.cur = inp.value; if (isMetal(a.cur)) a.savings = true;
