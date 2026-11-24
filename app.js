@@ -55,7 +55,7 @@ const DB = {
 const S = { ops: [], cfg: null, month: '2026-12', tab: 'overview', edit: null, draft: null, q: '' };
 function defaultCfg() {
   return {
-    version: 1, updatedAt: Date.now(),
+    version: 1, updatedAt: 0, // 0 = стартовые настройки: при синхронизации их заменят настоящие с другого устройства
     accounts: [
       { name: 'Kaspi Gold', type: 'Карта', savings: false, start: 0, fact: null },
       { name: 'Kaspi Депозит', type: 'Депозит', savings: true, start: 0, fact: null },
@@ -70,7 +70,9 @@ function defaultCfg() {
     lastAccount: 'Kaspi Gold',
   };
 }
-async function saveCfg() { S.cfg.updatedAt = Date.now(); await DB.set('cfg', S.cfg); }
+async function saveCfg() { S.cfg.updatedAt = Date.now(); await DB.set('cfg', S.cfg); Sync.soon(); }
+// Последний выбранный счёт помним только на этом устройстве (чтобы не «перебивать» настройки других устройств)
+const lastAcc = { get() { try { return localStorage.getItem('zhizn-last-account'); } catch (e) { return null; } }, set(v) { try { localStorage.setItem('zhizn-last-account', v); } catch (e) {} } };
 const live = () => S.ops.filter(o => !o.deleted);
 
 // ---------- Проверка операции ----------
@@ -197,7 +199,7 @@ function renderHistory() {
 }
 
 // ---------- Новая операция / правка ----------
-function newDraft() { return { type: 'Расход', date: today(), account: S.cfg.lastAccount || S.cfg.accounts[0].name, cat: '', sub: '', amount: '', person: '', to: '', comment: '' }; }
+function newDraft() { return { type: 'Расход', date: today(), account: (S.cfg.accounts.some(a => a.name === lastAcc.get()) ? lastAcc.get() : S.cfg.accounts[0].name), cat: '', sub: '', amount: '', person: '', to: '', comment: '' }; }
 function renderAdd() {
   if (!S.draft) S.draft = newDraft();
   const d = S.draft, T = TYPE[d.type];
@@ -240,7 +242,7 @@ function renderAdd() {
     if (S.edit) { Object.assign(op, { id: S.edit, updatedAt: now, device: DEVICE }); const i = S.ops.findIndex(x => x.id === S.edit); op.createdAt = S.ops[i].createdAt; S.ops[i] = op; }
     else { Object.assign(op, { id: uid(), createdAt: now, updatedAt: now, device: DEVICE, deleted: false }); S.ops.push(op); }
     await DB.put(op);
-    S.cfg.lastAccount = op.account; await saveCfg();
+    lastAcc.set(op.account); Sync.soon();
     S.month = mkey(op.date);
     toast(afterSaveText(op));
     S.draft = null; const wasEdit = !!S.edit; S.edit = null;
@@ -248,7 +250,7 @@ function renderAdd() {
   };
   if ($('#del')) $('#del').onclick = async () => {
     if (!confirm('Удалить эту операцию? Её можно будет восстановить только из резервной копии.')) return;
-    const i = S.ops.findIndex(x => x.id === S.edit); S.ops[i] = { ...S.ops[i], deleted: true, updatedAt: Date.now(), device: DEVICE }; await DB.put(S.ops[i]);
+    const i = S.ops.findIndex(x => x.id === S.edit); S.ops[i] = { ...S.ops[i], deleted: true, updatedAt: Date.now(), device: DEVICE }; await DB.put(S.ops[i]); Sync.soon();
     toast('Операция удалена'); S.draft = null; S.edit = null; setTab('history');
   };
   if (!S.edit) setTimeout(() => $('#amount').focus(), 50);
@@ -310,7 +312,10 @@ function renderMore() {
     <div class="grid2" style="margin:8px 0"><input class="in" id="newPerson" placeholder="Имя"><button class="btn small" id="addPerson">+ Человек</button></div></div>
   <h2>Данные</h2>
   <div class="card" style="padding:12px">
-    <div class="muted">Операций: ${live().length}. Хранятся на этом устройстве. Синхронизация через OneDrive — после настройки аккаунтов.</div>
+    <div class="muted">Операций: ${live().length}. Хранятся на этом устройстве${Sync.enabled() ? ' и в твоём Google Диске (скрытая папка приложения — её видит только «Жизнь»)' : ''}.</div>
+    <div style="margin-top:6px;font-size:13px">${syncInfo()}</div>
+    <button class="btn small" id="syncNow">${Sync.enabled() ? '☁ Синхронизировать сейчас' : '☁ Подключить Google Диск'}</button>
+    ${Sync.enabled() ? '<button class="btn small light" id="syncOff">Отключить на этом устройстве</button>' : ''}
     <button class="btn small" id="exportCsv">Выгрузить операции (Excel / CSV)</button>
     <button class="btn small light" id="backup">Резервная копия (файл)</button>
     <label class="btn small light" style="cursor:pointer">Восстановить из копии<input type="file" id="restore" accept=".json" hidden></label>
@@ -334,6 +339,8 @@ function renderMore() {
   document.querySelectorAll('[data-addsub]').forEach(btn => btn.onclick = async () => { const ci = +btn.dataset.addsub, v = $('#ns' + ci).value.trim(); if (!v) return; const c = S.cfg.exp[ci]; if (c.subs.some(s => s.name === v)) return toast('Уже есть'); c.subs.splice(c.subs.length - 1, 0, { name: v, oblig: 'Важный', char: 'Переменный', period: 'Ежемесячный', base: 0 }); await saveCfg(); renderMore(); });
   $('#addCat').onclick = async () => { const v = $('#newCat').value.trim(); if (!v || S.cfg.exp.some(c => c.cat === v)) return; S.cfg.exp.push({ cat: v, pocket: 'Повседневные расходы', subs: [{ name: 'Другое', oblig: 'Необязательный', char: 'Переменный', period: 'Нерегулярный', base: 0 }] }); await saveCfg(); renderMore(); };
   $('#addPerson').onclick = async () => { const v = $('#newPerson').value.trim(); if (!v || S.cfg.people.some(p => p.name === v)) return; S.cfg.people.push({ name: v, role: 'Другое' }); await saveCfg(); renderMore(); };
+  $('#syncNow').onclick = () => Sync.run(true).then(n => { toast(n ? `Синхронизировано: подтянуто изменений — ${n}` : 'Синхронизировано ✓'); renderMore(); }).catch(e => { toast('⚠ ' + e.message); renderMore(); });
+  if ($('#syncOff')) $('#syncOff').onclick = () => { if (!confirm('Отключить синхронизацию на этом устройстве? Данные останутся и здесь, и в Google Диске.')) return; Sync.off(); renderMore(); };
   $('#exportCsv').onclick = exportCsv;
   $('#backup').onclick = () => download(`жизнь-копия-${today()}.json`, JSON.stringify({ app: 'zhizn', v: 1, at: new Date().toISOString(), cfg: S.cfg, ops: S.ops }, null, 1), 'application/json');
   $('#restore').onchange = async e => {
@@ -343,7 +350,7 @@ function renderMore() {
       if (!confirm(`Восстановить ${data.ops.length} операций из копии от ${data.at.slice(0, 10)}? Текущие данные будут объединены с копией.`)) return;
       for (const o of data.ops) { const cur = S.ops.find(x => x.id === o.id); if (!cur || (o.updatedAt || 0) > (cur.updatedAt || 0)) { await DB.put(o); } }
       if ((data.cfg.updatedAt || 0) > (S.cfg.updatedAt || 0)) { S.cfg = data.cfg; await DB.set('cfg', S.cfg); }
-      S.ops = await DB.all(); toast('Восстановлено'); renderMore();
+      S.ops = await DB.all(); toast('Восстановлено'); Sync.soon(); renderMore();
     } catch (err) { toast('Не удалось прочитать файл: ' + err.message); }
   };
 }
@@ -353,6 +360,98 @@ function exportCsv() {
   const rows = live().sort((a, b) => a.date.localeCompare(b.date)).map(o => [o.date.split('-').reverse().join('.'), o.type, o.account, o.cat, o.sub, String(o.amount).replace('.', ','), o.person, o.to, o.comment]);
   const csv = '﻿' + [head, ...rows].map(r => r.map(x => '"' + String(x ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
   download(`операции-${today()}.csv`, csv, 'text/csv');
+}
+
+// ---------- Синхронизация через Google Диск ----------
+// Все данные лежат одним файлом в скрытой папке приложения (appDataFolder) на Google Диске пользователя.
+// Синхронизация: скачать файл → объединить с данными устройства (по id, побеждает более позднее изменение) → загрузить обратно.
+// Ничего не теряется: каждое устройство хранит свою копию и при следующей синхронизации снова объединит всё.
+const GOOGLE_CLIENT_ID = '973066398697-p3o4kuaquntmksm4kf5o30e2a3rnb18k.apps.googleusercontent.com';
+const Sync = {
+  file: 'zhizn-data.json', token: null, exp: 0, busy: false, timer: null,
+  state() { try { return JSON.parse(localStorage.getItem('zhizn-sync') || '{}'); } catch (e) { return {}; } },
+  setState(p) { try { localStorage.setItem('zhizn-sync', JSON.stringify({ ...this.state(), ...p })); } catch (e) {} },
+  enabled() { return !!this.state().on; },
+  off() { this.setState({ on: false }); this.token = null; try { sessionStorage.removeItem('zhizn-token'); } catch (e) {} this.mark('off'); },
+  loadGis() {
+    return new Promise((res, rej) => {
+      if (window.google && google.accounts && google.accounts.oauth2) return res();
+      const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
+      s.onload = () => res(); s.onerror = () => rej(new Error('нет связи с Google — проверь интернет')); document.head.appendChild(s);
+    });
+  },
+  async getToken(interactive) {
+    if (this.token && Date.now() < this.exp - 60000) return this.token;
+    try { const t = JSON.parse(sessionStorage.getItem('zhizn-token') || 'null'); if (t && Date.now() < t.exp - 60000) { this.token = t.v; this.exp = t.exp; return this.token; } } catch (e) {}
+    if (!interactive) return null;
+    await this.loadGis();
+    return new Promise((res, rej) => {
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID, scope: 'https://www.googleapis.com/auth/drive.appdata',
+        callback: r => {
+          if (r.error) return rej(new Error(r.error_description || r.error));
+          this.token = r.access_token; this.exp = Date.now() + (r.expires_in || 3600) * 1000;
+          try { sessionStorage.setItem('zhizn-token', JSON.stringify({ v: this.token, exp: this.exp })); } catch (e) {}
+          res(this.token);
+        },
+        error_callback: e => rej(new Error(e && e.type === 'popup_closed' ? 'окно входа закрыто' : (e && (e.message || e.type)) || 'вход не выполнен')),
+      });
+      client.requestAccessToken({ prompt: this.enabled() ? '' : 'consent' });
+    });
+  },
+  async api(url, opt = {}) {
+    const r = await fetch(url, { ...opt, headers: { Authorization: 'Bearer ' + this.token, ...(opt.headers || {}) } });
+    if (r.status === 401) { this.token = null; try { sessionStorage.removeItem('zhizn-token'); } catch (e) {} throw new Error('нужно войти в Google заново'); }
+    if (!r.ok) throw new Error('Google Диск ответил ошибкой ' + r.status);
+    return r;
+  },
+  async run(interactive) {
+    if (this.busy) return 0;
+    const tok = await this.getToken(interactive);
+    if (!tok) { this.mark('wait'); return 0; }
+    this.busy = true; this.mark('busy');
+    try {
+      const q = encodeURIComponent(`name='${this.file}'`);
+      const list = await (await this.api(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id)`)).json();
+      const f = list.files && list.files[0];
+      let changed = 0;
+      if (f) changed = await mergeData(await (await this.api(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).json());
+      const body = JSON.stringify({ app: 'zhizn', v: 1, at: new Date().toISOString(), device: DEVICE, cfg: S.cfg, ops: S.ops });
+      if (f) await this.api(`https://www.googleapis.com/upload/drive/v3/files/${f.id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body });
+      else {
+        const fd = new FormData();
+        fd.append('metadata', new Blob([JSON.stringify({ name: this.file, parents: ['appDataFolder'] })], { type: 'application/json' }));
+        fd.append('file', new Blob([body], { type: 'application/json' }));
+        await this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', body: fd });
+      }
+      this.setState({ on: true, last: Date.now(), err: '' }); this.mark('ok');
+      if (changed && S.tab !== 'add') render();
+      return changed;
+    } catch (e) { this.setState({ err: e.message }); this.mark('err'); throw e; }
+    finally { this.busy = false; }
+  },
+  soon() { if (!this.enabled()) return; clearTimeout(this.timer); this.timer = setTimeout(() => this.run(false).catch(() => {}), 1500); },
+  mark(st) {
+    const el = $('#syncDot'); if (!el) return;
+    const m = { ok: ['☁ ✓', 'Синхронизировано'], busy: ['☁ …', 'Синхронизация…'], err: ['☁ !', 'Ошибка синхронизации — нажми, чтобы повторить'], wait: ['☁ ↻', 'Нажми, чтобы синхронизировать'] }[st];
+    el.textContent = m ? m[0] : ''; el.title = m ? m[1] : ''; el.dataset.st = st; el.style.display = m ? '' : 'none';
+  },
+};
+async function mergeData(data) {
+  if (!data || data.app !== 'zhizn') throw new Error('в Google Диске чужой файл');
+  let n = 0;
+  for (const o of data.ops || []) {
+    const i = S.ops.findIndex(x => x.id === o.id);
+    if (i < 0 || (o.updatedAt || 0) > (S.ops[i].updatedAt || 0)) { await DB.put(o); if (i < 0) S.ops.push(o); else S.ops[i] = o; n++; }
+  }
+  if (data.cfg && (data.cfg.updatedAt || 0) > (S.cfg.updatedAt || 0)) { S.cfg = data.cfg; await DB.set('cfg', S.cfg); n++; }
+  return n;
+}
+function syncInfo() {
+  const st = Sync.state();
+  if (!st.on) return 'Синхронизация выключена. Подключи Google Диск, чтобы телефон и ноутбук видели одни данные.';
+  const last = st.last ? new Date(st.last).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'ещё не было';
+  return `☁ Google Диск подключён · последняя синхронизация: ${last}` + (st.err ? `<div class="err">⚠ ${esc(st.err)}</div>` : '');
 }
 
 // ---------- Запуск ----------
@@ -370,5 +469,9 @@ function exportCsv() {
   $('#mPrev').onclick = () => { S.month = mshift(S.month, -1); render(); };
   $('#mNext').onclick = () => { S.month = mshift(S.month, 1); render(); };
   render();
+  Sync.mark(Sync.enabled() ? 'wait' : 'off');
+  $('#syncDot').onclick = () => Sync.run(true).then(n => toast(n ? `Синхронизировано: подтянуто изменений — ${n}` : 'Синхронизировано ✓')).catch(e => toast('⚠ ' + e.message));
+  if (Sync.enabled()) Sync.run(false).catch(() => {});
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Sync.enabled()) Sync.run(false).catch(() => {}); });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
