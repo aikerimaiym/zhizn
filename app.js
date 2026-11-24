@@ -145,7 +145,7 @@ function toBase(v, code) { const r = Rates.get(code); return code === baseCur() 
 function validate(o) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date || '')) return 'Укажи дату';
   if (isPocketOp(o)) {   // перекладка между карманами (деньги не двигаются, меняется только назначение)
-    const names = pockets().map(p => p.name);
+    const names = [...pockets().map(p => p.name), ...goals().map(gKey)];
     if (!(o.amount > 0) || o.from === o.to || (o.from && !names.includes(o.from)) || (o.to && !names.includes(o.to))) return 'Неверная перекладка';
     return '';
   }
@@ -214,7 +214,46 @@ const POCKET_KINDS = {
   flexible: { l: 'Гибкий', i: '🌿', d: 'остаток в конце месяца возвращается в «Свободно»; экономия может покрыть перерасход' },
   buffer: { l: 'Буфер', i: '🛟', d: 'до 10% месячного плана; покрывает перерасход последним' },
   protected: { l: 'Защищённый', i: '🛡', d: 'никогда не берётся автоматически' },
+  goal: { l: 'Цель', i: '🎯', d: 'копится на цель (раздел «Цели»); на перерасход не берётся' },
 };
+// ---------- Цели и накопления ----------
+// cfg.goals: [{ id, name, target, deadline, priority 1–5 (1 — главный), linkSavings, archived }]
+// Цель — карман типа 'goal' с именем 'goal:<id>'. Цель с linkSavings: накоплено = накопительные счета (подушка на депозите).
+const goals = () => S.cfg.goals || [];
+const gKey = g => 'goal:' + g.id;
+const pLabel = name => { if (!name) return 'Свободно'; if (name.startsWith('goal:')) { const g = goals().find(x => gKey(x) === name); return '🎯 ' + (g ? g.name : 'цель'); } return name; };
+function goalInfo(g, ps) {
+  const t = today(), saved = r2(g.linkSavings ? ps.savings : ((ps.st[gKey(g)] || {}).bal || 0)), target = +g.target || 0, rest = r2(Math.max(0, target - saved));
+  const months = g.deadline ? Math.max(1, Math.ceil(dDiff(g.deadline, t) / 30.44)) : 0;
+  const need = !g.deadline ? 0 : g.deadline <= t ? rest : r2(rest / months);
+  // Темп: сколько в среднем поступало в цель за последние 3 месяца
+  const since = dAdd(t, -91); let inflow = 0;
+  if (g.linkSavings) {   // для подушки на депозите — по переводам на накопительные счета и процентам
+    const savNames = S.cfg.accounts.filter(a => a.savings).map(a => a.name);
+    for (const o of live()) if (!isPocketOp(o) && !validate(o) && o.date >= since) {
+      const T = TYPE[o.type]; if (!T) continue;
+      if (savNames.includes(o.account)) inflow += T.sign * opBase(o);
+      if (T.to && savNames.includes(o.to) && !T.fx) inflow += opBase(o);
+    }
+  } else for (const o of live()) if (isPocketOp(o) && !validate(o) && o.date >= since) { if (o.to === gKey(g)) inflow += o.amount; if (o.from === gKey(g)) inflow -= o.amount; }
+  // темп делим на число месяцев с создания цели (1–3), чтобы новая цель не выглядела «отстающей»
+  const ageM = g.createdAt ? Math.min(3, Math.max(1, Math.ceil(dDiff(t, g.createdAt.slice(0, 10)) / 30.44))) : 3;
+  const pace = r2(Math.max(0, inflow) / ageM);
+  const eta = rest <= 0 ? t : pace > 0 ? addMonthsIso(t, Math.ceil(rest / pace)) : '';
+  const fresh = !!g.createdAt && mkey(g.createdAt.slice(0, 10)) === mkey(t) && pace === 0;   // создана в этом месяце, взносов ещё не было
+  const onTrack = rest <= 0 || !g.deadline || fresh || (!!eta && eta <= g.deadline) || (pace >= need * 0.99 && need > 0);
+  return { g, saved, target, rest, pct: target ? Math.min(1, saved / target) : 0, months, need, pace, eta, onTrack, fresh, done: target > 0 && saved >= target, late: !!g.deadline && g.deadline < t && rest > 0 };
+}
+// Сводка: сколько нужно откладывать на все цели со сроком и хватает ли текущего остатка месяца
+function goalsSummary(ps) {
+  const infos = goals().filter(g => !g.archived).map(g => goalInfo(g, ps));
+  const needAll = r2(infos.filter(i => !i.done && i.g.deadline).reduce((s, i) => s + i.need, 0));
+  const cur = mkey(today()), months = [];
+  // только полные месяцы учёта (первый месяц считается, если учёт начат 1-го числа)
+  for (let k = 1; k <= 3; k++) { const m = mshift(cur, -k); if (m > mkey(S.cfg.startDate) || (m === mkey(S.cfg.startDate) && S.cfg.startDate.endsWith('-01'))) months.push(m); }
+  const cap = months.length ? r2(months.reduce((s, m) => s + sumType('Доход', m) + sumType('Помощь', m) - sumType('Расход', m), 0) / months.length) : null;
+  return { infos, needAll, cap, extra: cap === null ? null : r2(Math.max(0, needAll - cap)), monthsUsed: months.length };
+}
 const DEFAULT_POCKET_KIND = { 'Обязательные платежи': 'mandatory', 'Повседневные расходы': 'flexible', 'Красота и уход': 'flexible', 'Блог': 'flexible', 'Спорт': 'saving', 'Автомобиль': 'saving', 'Здоровье': 'saving', 'Сезонные расходы': 'saving', 'Образование': 'saving', 'Путешествия': 'saving', 'Подарки и праздники': 'saving' };
 const isPocketOp = o => o.type === '_pocket';
 function pockets() {
@@ -230,7 +269,7 @@ const pocketOfCat = cat => {
 };
 function pocketMonthPlan(name, M) { let s = 0; for (const c of S.cfg.exp) if (pocketOfCat(c.cat) === name) for (const sb of c.subs) s += planFor(M, c.cat, sb.name); return s; }
 function pocketState(M) {
-  const list = pockets();
+  const list = [...pockets(), ...goals().filter(g => !g.linkSavings && !g.archived).map(g => ({ name: gKey(g), label: g.name, kind: 'goal', prio: +g.priority || 3, deadline: g.deadline || '' }))];
   const st = Object.fromEntries(list.map(p => [p.name, { ...p, bal: 0, inM: 0, spentM: 0, plan: p.linkSavings || p.kind === 'buffer' ? 0 : pocketMonthPlan(p.name, M) }]));
   const old = (n, o) => st[n] && st[n].kind === 'flexible' && mkey(o.date) !== M;   // старые месяцы гибких карманов не считаются
   for (const o of live()) {
@@ -257,6 +296,9 @@ function suggestDistribution(M, avail) {
   const take = (p, need) => { const v = r2(Math.min(left, Math.max(0, need))); if (v > 0) { items.push({ to: p.name, amount: v }); left = r2(left - v); } };
   for (const kind of ['mandatory', 'saving', 'flexible']) for (const p of ps.list.filter(p => p.kind === kind)) take(p, Math.max(p.plan - p.inM, -p.bal));
   for (const p of ps.list.filter(p => p.kind === 'buffer')) take(p, 0.1 * ps.planTotal - p.bal);
+  // 4) цели: по приоритету, потом по ближайшему сроку — взнос этого месяца
+  const gs = ps.list.filter(p => p.kind === 'goal').sort((a, b) => (a.prio - b.prio) || (a.deadline || '9999').localeCompare(b.deadline || '9999'));
+  for (const p of gs) { const g = goals().find(x => gKey(x) === p.name); if (!g) continue; const inf = goalInfo(g, ps); if (!inf.done) take(p, inf.need - Math.max(0, p.inM)); }
   return { items, left };
 }
 // Покрытие перерасхода кармана: свободные деньги → экономия гибких карманов → буфер. Обязательные, накопительные и Подушку не трогаем.
@@ -454,6 +496,12 @@ function renderOverview() {
   negPockets.forEach(p => warns.push(['warn', `⚠ Карман «${p.name}» в минусе на ${money(-p.bal)} — покрой его во «Бюджет → Карманы»`]));
   if (ps.free > 0 && ps.inPockets === 0 && live().length) warns.push(['info', `ℹ ${money(ps.free)} без назначения — разложи по карманам: «Бюджет → Карманы»`]);
   if (missing.length) warns.push(['warn', `⚠ Нет курса для: ${missing.join(', ')} — эти счета не вошли в итоги. Обнови курсы: «Ещё → Валюты и курсы»`]);
+  if (goals().some(g => !g.archived)) {
+    const gsum = goalsSummary(pocketState(mkey(today())));
+    gsum.infos.filter(i => i.late).slice(0, 2).forEach(i => warns.push(['warn', `⚠ Срок цели «${i.g.name}» прошёл — осталось накопить ${money(i.rest)}. Поменяй срок или сумму в «Бюджет → Цели»`]));
+    gsum.infos.filter(i => !i.done && !i.late && i.g.deadline && !i.onTrack).slice(0, 2).forEach(i => warns.push(['info', `🎯 Цель «${i.g.name}» отстаёт: нужно ${money(i.need)}/мес${i.pace ? ', сейчас ' + money(i.pace) + '/мес' : ''}`]));
+    if (gsum.extra > 0) warns.push(['info', `🎯 Чтобы успеть ко всем целям, не хватает ${money(gsum.extra)} в месяц`]);
+  }
   if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»']);
   if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»']);
   if (!warns.length) warns.push(['ok', '✓ Всё в порядке']);
@@ -675,9 +723,9 @@ function afterSaveText(o) {
 }
 
 // ---------- Бюджет: карманы и план/факт ----------
-const budgetSeg = () => `<div class="seg" style="margin-bottom:10px">${[['pockets', '💼 Карманы'], ['pay', '📅 Платежи'], ['plan', '▤ План и факт']].map(([k, l]) => `<button class="chip ${(S.btab || 'pockets') === k ? 'on' : ''}" data-btab="${k}">${l}</button>`).join('')}</div>`;
+const budgetSeg = () => `<div class="seg" style="margin-bottom:10px">${[['pockets', '💼 Карманы'], ['goals', '🎯 Цели'], ['pay', '📅 Платежи'], ['plan', '▤ План и факт']].map(([k, l]) => `<button class="chip ${(S.btab || 'pockets') === k ? 'on' : ''}" data-btab="${k}">${l}</button>`).join('')}</div>`;
 function bindBudgetSeg() { document.querySelectorAll('[data-btab]').forEach(b => b.onclick = () => { S.btab = b.dataset.btab; S.dist = false; renderBudget(); }); }
-function renderBudget() { const b = S.btab || 'pockets'; if (b === 'pockets') return renderPockets(); if (b === 'pay') return renderPayments(); return renderPlanFact(); }
+function renderBudget() { const b = S.btab || 'pockets'; if (b === 'pockets') return renderPockets(); if (b === 'pay') return renderPayments(); if (b === 'goals') return renderGoals(); return renderPlanFact(); }
 function renderPayments() {
   const t = today(), f = payForecast();
   const cal = payCalendar(dAdd(t, -45), dAdd(t, 45));
@@ -765,7 +813,7 @@ function bindPayForm(p0) {
 function renderPockets() {
   const M = S.month, ps = pocketState(M);
   const sug = S.dist ? suggestDistribution(M) : null;
-  const opts = (sel, withFree) => (withFree ? `<option value="">Свободно</option>` : '') + ps.list.filter(p => !p.linkSavings).map(p => `<option value="${esc(p.name)}" ${p.name === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  const opts = (sel, withFree) => (withFree ? `<option value="">Свободно</option>` : '') + ps.list.filter(p => !p.linkSavings).map(p => `<option value="${esc(p.name)}" ${p.name === sel ? 'selected' : ''}>${esc((p.kind === 'goal' ? '🎯 ' : '') + (p.label || p.name))}</option>`).join('');
   const journal = live().filter(isPocketOp).sort((a, b) => b.createdAt - a.createdAt).slice(0, 12);
   $('#view').innerHTML = budgetSeg() + `
   <div class="cards">
@@ -777,20 +825,20 @@ function renderPockets() {
   ${ps.free < 0 ? `<div class="warn">⚠ Карманы больше, чем денег, на ${money(-ps.free)}: часть карманов не обеспечена. Уменьши карманы (переложи в «Свободно») или внеси поступление.</div>` : ''}
   ${!S.dist && ps.free > 0 ? `<div class="info">У тебя ${money(ps.free)} без назначения. <button class="btn small" id="distOpen" style="margin:6px 0 0">Распределить по правилу</button></div>` : ''}
   ${sug ? `<div class="card" style="padding:10px 12px"><b>Распределение ${money(ps.free)}</b>
-    <div class="muted">По правилу: обязательные → накопительные → гибкие → буфер до 10% плана. Суммы можно поменять.</div>
-    <table class="t">${sug.items.map((it, i) => `<tr><td>${esc(POCKET_KINDS[ps.st[it.to].kind].i)} ${esc(it.to)}</td><td><input class="mini" data-dist="${i}" inputmode="decimal" value="${it.amount}"></td></tr>`).join('') || '<tr><td class="muted">Всё уже распределено по плану 🎉</td><td></td></tr>'}
+    <div class="muted">По правилу: обязательные → накопительные → гибкие → буфер до 10% плана → цели (по приоритету и сроку). Суммы можно поменять.</div>
+    <table class="t">${sug.items.map((it, i) => `<tr><td>${esc(POCKET_KINDS[ps.st[it.to].kind].i)} ${esc(ps.st[it.to].label || it.to)}</td><td><input class="mini" data-dist="${i}" inputmode="decimal" value="${it.amount}"></td></tr>`).join('') || '<tr><td class="muted">Всё уже распределено по плану 🎉</td><td></td></tr>'}
     <tr><td class="muted">Останется свободно</td><td id="distLeft">${money(sug.left)}</td></tr></table>
-    ${sug.left > 0 ? '<div class="muted">Остаток можно оставить свободным или позже направить на цели (следующий этап).</div>' : ''}
+    ${sug.left > 0 ? '<div class="muted">Остаток останется свободным — его можно положить в любую цель кнопкой «Пополнить» в «Цели».</div>' : ''}
     ${sug.items.length ? '<button class="btn" id="distOk">Подтвердить распределение</button><button class="btn light" id="distCancel">Не сейчас</button>' : '<button class="btn light" id="distCancel">Понятно</button>'}</div>` : ''}
   <h2>Карманы · ${mlabel(M)}</h2>
   ${(() => { const empty = p => !p.linkSavings && p.kind !== 'buffer' && !p.bal && !p.plan && !p.inM && !p.spentM;
     const act = ps.list.filter(p => !empty(p)), emp = ps.list.filter(empty);
-    return `<div class="card">${act.map(p => pocketRow(p)).join('')}</div>` + (emp.length ? `<details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Пустые карманы (${emp.length})</summary><div class="muted" style="padding-bottom:8px">${emp.map(p => esc(POCKET_KINDS[p.kind].i + ' ' + p.name)).join(' · ')}<br>Появятся в списке, когда в них будет план, деньги или траты.</div></details>` : ''); })()}
+    return `<div class="card">${act.map(p => pocketRow(p)).join('')}</div>` + (emp.length ? `<details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Пустые карманы (${emp.length})</summary><div class="muted" style="padding-bottom:8px">${emp.map(p => esc(POCKET_KINDS[p.kind].i + ' ' + (p.label || p.name))).join(' · ')}<br>Появятся в списке, когда в них будет план, деньги или траты.</div></details>` : ''); })()}
   <details class="card" style="padding:4px 12px"><summary style="font-weight:600">⇄ Переложить между карманами</summary>
     <div class="grid2"><div><label class="f">Откуда</label><select class="in" id="mvFrom">${opts('', true)}</select></div><div><label class="f">Куда</label><select class="in" id="mvTo">${opts(ps.list.find(p => !p.linkSavings) ? ps.list.find(p => !p.linkSavings).name : '', true)}</select></div></div>
     <label class="f">Сумма</label><input class="in" id="mvAmt" inputmode="decimal" placeholder="0">
     <button class="btn small" id="mvOk" style="margin-bottom:10px">Переложить</button></details>
-  ${journal.length ? `<details class="card" style="padding:4px 12px"><summary style="font-weight:600">Журнал карманов</summary>${journal.map(o => `<div class="row"><span class="sub">${o.date.split('-').reverse().join('.')} · ${esc(o.from || 'Свободно')} → ${esc(o.to || 'Свободно')}${o.comment ? ' · ' + esc(o.comment) : ''}</span><span>${money(o.amount)} <button class="btn small light" data-undo="${o.id}" style="margin:0;padding:4px 8px">✕</button></span></div>`).join('')}</details>` : ''}
+  ${journal.length ? `<details class="card" style="padding:4px 12px"><summary style="font-weight:600">Журнал карманов</summary>${journal.map(o => `<div class="row"><span class="sub">${o.date.split('-').reverse().join('.')} · ${esc(pLabel(o.from))} → ${esc(pLabel(o.to))}${o.comment ? ' · ' + esc(o.comment) : ''}</span><span>${money(o.amount)} <button class="btn small light" data-undo="${o.id}" style="margin:0;padding:4px 8px">✕</button></span></div>`).join('')}</details>` : ''}
   <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работают карманы?</summary><div class="muted" style="padding-bottom:8px">
     <p style="margin:4px 0"><b>Карман — деньги с назначением</b>: на машину, на обязательные платежи, на повседневные траты. Деньги остаются на твоих счетах, карман просто «помечает», для чего они.</p>
     <p style="margin:4px 0"><b>Свободно</b> = деньги на обычных счетах − всё, что лежит в карманах. Если карманов больше, чем денег, приложение предупредит.</p>
@@ -833,10 +881,98 @@ function pocketRow(p) {
   const neg = p.bal < 0;
   const detail = p.linkSavings ? 'накопительные счета · пополняется переводом на депозит'
     : p.kind === 'buffer' ? `цель: ${money(0.1 * pocketState(S.month).planTotal)} (10% плана)`
+    : p.kind === 'goal' ? `в этом месяце: +${money(Math.max(0, p.inM))} · подробно — «Бюджет → Цели»`
     : `в этом месяце: +${money(Math.max(0, p.inM))} · потрачено ${money(p.spentM)} · план ${money(p.plan)}${p.kind === 'flexible' ? ' · остаток вернётся в «Свободно» 1-го' : ''}`;
-  return `<div class="row" style="display:block"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">${k.i} ${esc(p.name)}</span><b class="${neg ? 'neg' : ''}">${money(p.bal)}</b></div>
+  return `<div class="row" style="display:block"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">${k.i} ${esc(p.label || p.name)}</span><b class="${neg ? 'neg' : ''}">${money(p.bal)}</b></div>
     <div class="sub">${k.l} · ${detail}</div>
     ${neg && !p.linkSavings ? `<div class="err">Перерасход ${money(-p.bal)} <button class="btn small" data-cover="${esc(p.name)}" style="margin:4px 0 0">Покрыть</button></div>` : ''}</div>`;
+}
+// ---------- Экран «Цели» ----------
+const GOAL_IDEAS = ['Финансовая подушка', 'Первая квартира', 'Путешествие', 'Международная конференция', 'Крупная покупка', 'Курсы и обучение'];
+function renderGoals() {
+  const ps = pocketState(mkey(today())), sum = goalsSummary(ps);
+  const ed = S.goalEdit ? goals().find(g => g.id === S.goalEdit) : null;
+  const active = sum.infos.filter(i => !i.done).sort((a, b) => ((+a.g.priority || 3) - (+b.g.priority || 3)) || (a.g.deadline || '9999').localeCompare(b.g.deadline || '9999'));
+  const done = sum.infos.filter(i => i.done);
+  $('#view').innerHTML = budgetSeg() + `
+  <div class="cards">
+    <div class="kpi lilac"><div class="l">Откладывать на цели</div><div class="v">${money(sum.needAll)}</div><div class="s">в месяц, чтобы успеть к срокам</div></div>
+    <div class="kpi ${sum.extra ? 'powder' : 'green'}"><div class="l">Остаётся в месяц</div><div class="v">${sum.cap === null ? '—' : money(sum.cap)}</div><div class="s">${sum.cap === null ? 'нужен хотя бы 1 полный месяц учёта' : 'доходы + помощь − расходы, ср. за ' + sum.monthsUsed + ' мес.'}</div></div>
+  </div>
+  ${sum.cap !== null && sum.needAll > 0 ? (sum.extra > 0
+    ? `<div class="warn">⚠ Чтобы успеть ко всем целям, не хватает <b>${money(sum.extra)}</b> в месяц. Варианты: больше дохода, меньше расходов или сдвинуть сроки.</div>`
+    : `<div class="ok">✓ Текущего остатка хватает, чтобы успевать к срокам всех целей.</div>`) : ''}
+  ${ps.free > 0 ? `<div class="info">Свободно ${money(ps.free)} — можно положить в цель кнопкой «Пополнить».</div>` : ''}
+  <h2>Мои цели</h2>
+  ${active.length ? active.map(goalCard).join('') : '<div class="card"><div class="row muted">Целей пока нет — добавь первую ниже.</div></div>'}
+  ${done.length ? `<h2>Достигнуто 🎉</h2>${done.map(goalCard).join('')}` : ''}
+  <h2>${ed ? 'Правка цели' : 'Новая цель'}</h2>
+  <div class="card" style="padding:10px 12px">
+    ${ed ? '' : `<div class="seg" style="margin-bottom:6px">${GOAL_IDEAS.map(n => `<button class="chip" data-gidea="${esc(n)}">${esc(n)}</button>`).join('')}</div>`}
+    <label class="f">Название</label><input class="in" id="gName" value="${esc(ed ? ed.name : '')}" placeholder="Например: Первая квартира">
+    <div class="grid2"><div><label class="f">Сумма цели, ${esc(CUR[baseCur()].sym)}</label><input class="in" id="gTarget" inputmode="decimal" value="${ed ? ed.target : ''}"></div>
+      <div><label class="f">Срок (необязательно)</label><input class="in" type="date" id="gDeadline" value="${ed ? ed.deadline || '' : ''}"></div></div>
+    <label class="f">Приоритет</label><select class="in" id="gPrio">${[1, 2, 3, 4, 5].map(n => `<option value="${n}" ${(+(ed ? ed.priority : 3) || 3) === n ? 'selected' : ''}>${'★'.repeat(6 - n)}${'☆'.repeat(n - 1)} ${['— главная', '— высокий', '— средний', '— низкий', '— когда-нибудь'][n - 1]}</option>`).join('')}</select>
+    <label class="f"><input type="checkbox" id="gLink" ${ed && ed.linkSavings ? 'checked' : ''}> копится на накопительных счетах (депозит) — накоплено = их остаток</label>
+    <div class="muted" id="gHint" style="margin-top:4px">${pocketState(mkey(today())).planTotal ? 'Подсказка для подушки: 6 × план месяца = ' + money(6 * pocketState(mkey(today())).planTotal) + ' <button class="btn small light" id="gSix" style="margin:0 0 0 4px;padding:3px 8px">вписать</button>' : ''}</div>
+    <div class="err" id="gErr"></div>
+    <button class="btn" id="gSave">${ed ? 'Сохранить' : '+ Добавить цель'}</button>
+    ${ed ? '<button class="btn light" id="gCancel">Отмена</button><button class="btn danger" id="gDel">Удалить цель</button>' : ''}
+  </div>
+  <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работают цели?</summary><div class="muted" style="padding-bottom:8px">
+    <p style="margin:4px 0"><b>Цель — это карман 🎯</b> с суммой и сроком. Деньги в ней настоящие: они остаются на твоих счетах, но уже «отложены» и не входят в «Свободно».</p>
+    <p style="margin:4px 0"><b>Взнос в месяц</b> = сколько осталось накопить ÷ сколько месяцев до срока. Без срока — копишь в своём темпе.</p>
+    <p style="margin:4px 0"><b>Распределение</b> после поступления: обязательные → накопительные → гибкие → буфер → <b>цели по приоритету и ближайшему сроку</b>.</p>
+    <p style="margin:4px 0"><b>Успеваю или нет</b> — по среднему темпу пополнения за 3 месяца. «Не хватает в месяц» — сравнение нужных взносов со средним остатком месяца (доходы + помощь − расходы).</p>
+    <p style="margin:4px 0"><b>Подушка на депозите</b>: поставь галочку «копится на накопительных счетах» — накоплено будет равно остатку депозита.</p>
+    <p style="margin:4px 0">Это планирование и учёт, а не инвестиционные рекомендации.</p>
+  </div></details>`;
+  bindBudgetSeg();
+  document.querySelectorAll('[data-gidea]').forEach(b => b.onclick = () => { $('#gName').value = b.dataset.gidea; if (b.dataset.gidea === 'Финансовая подушка') $('#gLink').checked = true; });
+  if ($('#gSix')) $('#gSix').onclick = () => { $('#gTarget').value = r2(6 * pocketState(mkey(today())).planTotal); };
+  $('#gSave').onclick = async () => {
+    const name = $('#gName').value.trim(), target = num($('#gTarget').value), deadline = $('#gDeadline').value, priority = +$('#gPrio').value, linkSavings = $('#gLink').checked;
+    if (!name) return ($('#gErr').textContent = '⚠ Назови цель');
+    if (!(target > 0)) return ($('#gErr').textContent = '⚠ Укажи сумму цели');
+    if (deadline && deadline <= today()) return ($('#gErr').textContent = '⚠ Срок должен быть в будущем');
+    if (goals().some(g => g.name === name && (!ed || g.id !== ed.id))) return ($('#gErr').textContent = '⚠ Цель с таким названием уже есть');
+    const list = goals().slice();
+    if (ed) list[list.findIndex(g => g.id === ed.id)] = { ...ed, name, target, deadline, priority, linkSavings };
+    else list.push({ id: uid().slice(0, 8), name, target, deadline, priority, linkSavings, archived: false, createdAt: new Date().toISOString() });
+    S.cfg.goals = list; S.goalEdit = null; await saveCfg(); toast(ed ? 'Цель сохранена' : 'Цель добавлена 🎯'); renderGoals();
+  };
+  if ($('#gCancel')) $('#gCancel').onclick = () => { S.goalEdit = null; renderGoals(); };
+  if ($('#gDel')) $('#gDel').onclick = async () => {
+    const bal = (ps.st[gKey(ed)] || {}).bal || 0;
+    if (!confirm(`Удалить цель «${ed.name}»?${bal > 0 ? ' Накопленные ' + money(bal) + ' вернутся в «Свободно».' : ''}`)) return;
+    if (bal > 0) await addPocketMoves([{ from: gKey(ed), to: '', amount: bal }], 'цель удалена');
+    S.cfg.goals = goals().map(g => g.id === ed.id ? { ...g, archived: true } : g); S.goalEdit = null; await saveCfg(); renderGoals();
+  };
+  document.querySelectorAll('[data-gedit]').forEach(b => b.onclick = () => { S.goalEdit = b.dataset.gedit; renderGoals(); setTimeout(() => $('#gName').scrollIntoView({ block: 'center' }), 50); });
+  document.querySelectorAll('[data-gadd],[data-gtake]').forEach(b => b.onclick = async () => {
+    const add = !!b.dataset.gadd, g = goals().find(x => x.id === (b.dataset.gadd || b.dataset.gtake)), bal = (ps.st[gKey(g)] || {}).bal || 0;
+    const v = num(prompt(add ? `Сколько положить в «${g.name}»? Свободно ${money(ps.free)}` : `Сколько забрать из «${g.name}» в «Свободно»? В цели ${money(bal)}`, add ? r2(Math.max(0, Math.min(ps.free, goalInfo(g, ps).need || ps.free))) : r2(bal)) || '');
+    if (!(v > 0)) return;
+    if (add && v > ps.free && !confirm(`Свободно только ${money(ps.free)} — карманы станут больше денег. Всё равно?`)) return;
+    if (!add && v > bal) { toast('В цели только ' + money(bal)); return; }
+    await addPocketMoves([add ? { from: '', to: gKey(g), amount: v } : { from: gKey(g), to: '', amount: v }], add ? 'пополнение цели' : 'из цели');
+    const after = goalInfo(g, pocketState(mkey(today())));
+    toast(after.done ? `🎉 Цель «${g.name}» достигнута!` : `${add ? 'В цель' : 'Из цели'}: ${money(v)} · накоплено ${Math.round(after.pct * 100)}%`); renderGoals();
+  });
+}
+function goalCard(i) {
+  const g = i.g, pr = +g.priority || 3, t = today();
+  const status = i.done ? '<span class="pos">🎉 достигнута</span>'
+    : i.late ? `<span class="neg">⚠ срок прошёл, осталось ${money(i.rest)}</span>`
+    : !g.deadline ? (i.pace > 0 ? `в текущем темпе — к ${i.eta.split('-').reverse().join('.')}` : 'без срока · копи в своём темпе')
+    : i.fresh ? 'новая цель · начни с первого взноса'
+    : i.onTrack ? `<span class="pos">✓ успеваю</span>${i.pace > 0 && i.eta ? ' · в текущем темпе к ' + i.eta.split('-').reverse().join('.') : ''}`
+    : `<span class="neg">⚠ отстаю</span>${i.pace > 0 ? ' · в текущем темпе к ' + i.eta.split('-').reverse().join('.') : ' · пополнений пока не было'}`;
+  return `<div class="card" style="padding:10px 12px"><div style="display:flex;justify-content:space-between;gap:8px"><b>🎯 ${esc(g.name)}</b><span class="sub">${'★'.repeat(6 - pr)}${'☆'.repeat(pr - 1)}</span></div>
+    <div style="display:flex;justify-content:space-between;margin-top:4px"><span>${money(i.saved)} <span class="sub">из ${money(i.target)}</span></span><b>${Math.round(i.pct * 100)}%</b></div>
+    <div class="bar"><i style="width:${i.pct * 100}%;background:${i.done ? 'var(--greenInk)' : 'var(--lilac2)'}"></i></div>
+    <div class="sub" style="margin-top:4px">${g.deadline ? 'срок ' + g.deadline.split('-').reverse().join('.') + (g.deadline > t ? ` (${i.months} мес.)` : '') + ' · ' : ''}${!i.done && g.deadline ? 'нужно ' + money(i.need) + '/мес · ' : ''}${i.pace ? 'темп ' + money(i.pace) + '/мес · ' : ''}${g.linkSavings ? 'на депозите · ' : ''}${status}</div>
+    <div>${g.linkSavings ? '' : `<button class="btn small" data-gadd="${g.id}">+ Пополнить</button><button class="btn small light" data-gtake="${g.id}">Забрать</button>`}<button class="btn small light" data-gedit="${g.id}">✎</button></div></div>`;
 }
 function renderPlanFact() {
   const b = budget(S.month);
@@ -920,7 +1056,7 @@ function renderMore() {
   <p class="muted">Название и тип каждого кармана. Какая категория в каком кармане — выбирается внутри категории выше. Подробно — «Бюджет → Карманы → Как работают карманы?».</p>
   <div class="card">${pockets().map((p, i) => `<div class="row" style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px">
     <input class="in" data-pk="${i}" data-k="name" value="${esc(p.name)}" ${p.linkSavings ? 'disabled' : ''}>
-    <select class="in" data-pk="${i}" data-k="kind" ${p.linkSavings ? 'disabled' : ''}>${Object.entries(POCKET_KINDS).filter(([k]) => p.linkSavings || k !== 'protected').map(([k, v]) => `<option value="${k}" ${k === p.kind ? 'selected' : ''}>${v.i} ${v.l}</option>`).join('')}</select>
+    <select class="in" data-pk="${i}" data-k="kind" ${p.linkSavings ? 'disabled' : ''}>${Object.entries(POCKET_KINDS).filter(([k]) => k !== 'goal' && (p.linkSavings || k !== 'protected')).map(([k, v]) => `<option value="${k}" ${k === p.kind ? 'selected' : ''}>${v.i} ${v.l}</option>`).join('')}</select>
     ${p.linkSavings ? '<span></span>' : `<button class="btn small light" data-delpk="${i}" style="margin:0">✕</button>`}</div>`).join('')}
     <div class="grid2" style="margin:8px 0"><input class="in" id="newPocket" placeholder="Новый карман"><button class="btn small" id="addPocket">+ Карман</button></div></div>
   <h2>Люди</h2>
