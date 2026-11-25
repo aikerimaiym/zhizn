@@ -429,14 +429,34 @@ function closeDepForm(a, bal) {
     <button class="btn small" data-closeok="${esc(a.name)}">Закрыть депозит</button>` : '<div class="err">Нет открытого счёта в этой валюте, куда перевести деньги — добавь его.</div>'}
     <button class="btn small light" data-closecancel="1">Отмена</button></div>`;
 }
-// Начальный остаток: вводится один раз, после первых операций закреплён (правка — через ✎ с подтверждением)
+// Начальный остаток: вводится один раз → «Сохранить» → «Всё верно?» Да/Нет → «Сохранить» ещё раз → закреплён навсегда.
+// После сохранения поле исчезает из счёта (видно только в «С чего начался учёт»), ошибки исправляются только сверкой.
 const accHasOps = a => live().some(o => !isPocketOp(o) && (o.account === a.name || o.to === a.name));
+const startSaved = a => !!a.startLocked || accHasOps(a);
+const dRu = d => d ? d.split('-').reverse().join('.') : '';
 function startField(a, i) {
-  const unit = isMetal(accCur(a)) ? ', г' : '', label = `Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}${unit}`;
-  const locked = (accHasOps(a) || a.startLocked) && S.editStart !== i;
-  return locked
-    ? `<label class="f">${label}</label><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${fmt(+a.start || 0, accCur(a))}</b><span class="sub">🔒 закреплён <button class="btn small light" data-editstart="${i}" style="margin:0;padding:3px 8px">✎</button></span></div>`
-    : `<label class="f">${label}</label><input class="in" data-acc="${i}" data-k="start" inputmode="decimal" value="${a.start || ''}" placeholder="0">`;
+  if (startSaved(a)) return '';
+  const unit = isMetal(accCur(a)) ? ' (в граммах)' : '';
+  return `<div class="info" style="margin-top:8px"><b>Начальный остаток на ${dRu(S.cfg.startDate)}${unit}</b><br>Сколько было на счёте в этот день. Сохраняется один раз и больше не меняется.
+    <div class="grid2" style="margin-top:6px"><input class="in" id="st${i}" inputmode="decimal" value="${a.start || ''}" placeholder="0"><button class="btn small" data-startsave="${i}" style="margin:0">Сохранить</button></div></div>`;
+}
+// Окно с кнопками: возвращает значение нажатой кнопки
+function askModal(body, btns) {
+  return new Promise(res => {
+    const el = document.createElement('div'); el.className = 'modal';
+    el.innerHTML = `<div class="modal-box">${body}${btns.map((b, k) => `<button class="btn ${b.light ? 'light' : ''}" data-mb="${k}">${esc(b.t)}</button>`).join('')}</div>`;
+    document.body.appendChild(el);
+    el.querySelectorAll('[data-mb]').forEach(x => x.onclick = () => { el.remove(); res(btns[+x.dataset.mb].v); });
+  });
+}
+// «С чего начался учёт»: зафиксированная точка отсчёта, только просмотр
+function startRecord() {
+  const accs = S.cfg.accounts, any = accs.some(startSaved);
+  const tot = totals(Object.fromEntries(accs.map(a => [a.name, startSaved(a) ? +a.start || 0 : 0]))).total;
+  return `<details class="card" style="padding:4px 12px"><summary style="font-weight:600">📜 С чего начался учёт</summary>
+    <div class="muted" style="margin-bottom:6px">Точка отсчёта: что было на счетах ${dRu(S.cfg.startDate)}. Её нельзя изменить — если что-то было введено неверно, это исправляется сверкой с банком.</div>
+    <table class="t">${accs.map(a => `<tr><td>${esc(a.name)}${a.closed ? ' <span class="sub">· закрыт</span>' : ''}<div class="sub">${startSaved(a) ? (a.startSavedAt ? 'сохранён ' + dRu(a.startSavedAt) : 'закреплён') : 'ещё не сохранён'}</div></td><td>${startSaved(a) ? fmt(+a.start || 0, accCur(a)) : '–'}</td></tr>`).join('')}
+    ${any ? `<tr><th>Итого</th><th>${money(tot)}</th></tr>` : ''}</table></details>`;
 }
 // Сверка с банком: разовое действие — ввела сумму из банка → «Сверить» → сразу результат
 function reconField(a, i, bal) {
@@ -445,7 +465,7 @@ function reconField(a, i, bal) {
   return `<label class="f">Сверка с банком · ${last}</label>
     <div class="grid2"><input class="in" id="rc${i}" inputmode="decimal" placeholder="сколько в банке сейчас"><button class="btn small" data-recon="${i}" style="margin:0">Сверить</button></div>
     ${pend ? `<div class="err" style="margin-top:6px">Сверка ${pend.date.split('-').reverse().join('.')}: в банке ${fmt(pend.bank, accCur(a))}, по учёту было ${fmt(pend.calc, accCur(a))} — разница ${(pend.bank - pend.calc > 0 ? '+' : '−') + fmt(Math.abs(pend.bank - pend.calc), accCur(a))}.
-      <div><button class="btn small" data-reconfix="${i}" style="margin:4px 4px 0 0">Внести корректировку на разницу</button><button class="btn small light" data-reconok="${i}" style="margin:4px 0 0">Нашла операцию — закрыть</button></div></div>` : ''}`;
+      <div><button class="btn small" data-reconfix="${i}" style="margin:4px 4px 0 0">${pend.bank > pend.calc ? '💰 Нашла средства: внести +' : 'Внести списание −'}${fmt(Math.abs(pend.bank - pend.calc), accCur(a))}</button><button class="btn small light" data-reconok="${i}" style="margin:4px 0 0">Найду пропущенную операцию сама</button></div></div>` : ''}`;
 }
 function closedAccRow(a, i) {
   return `<div class="row"><span class="sub">🔒 ${esc(a.name)} · закрыт ${a.closedAt ? a.closedAt.split('-').reverse().join('.') : ''}</span><button class="btn small light" data-reopen="${i}" style="margin:0">Открыть снова</button></div>`;
@@ -762,7 +782,8 @@ function renderOverview() {
     if (gsum.extra > 0) warns.push(['info', `🎯 Чтобы успеть ко всем целям, не хватает ${money(gsum.extra)} в месяц`, 'goals']);
   }
   if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»', 'cat']);
-  if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»', 'acc']);
+  const noStart = openAccs().filter(a => !startSaved(a));
+  if (noStart.length) warns.push(['info', `ℹ Сохрани начальный остаток: ${noStart.map(a => a.name).join(', ')} — «Ещё → Счета»`, 'acc:' + noStart[0].name]);
   if (!warns.length) warns.push(['ok', '✓ Всё в порядке']);
   const topCats = bud.cats.filter(c => c.plan || c.fact).sort((a, b) => b.fact - a.fact);
   const people = S.cfg.people.map(p => ({ p: p.name, v: live().filter(o => o.person === p.name && mkey(o.date) === m && !validate(o) && TYPE[o.type].sign > 0).reduce((s, o) => s + opBase(o), 0) })).filter(x => x.v);
@@ -1321,11 +1342,13 @@ function renderMore() {
   $('#view').innerHTML = `
   <h2 id="secAcc">Счета</h2>
   <div class="card" style="padding:10px 12px"><label class="f" style="margin-top:0">Дата начала учёта</label>
-    <input class="in" type="date" id="startDate" value="${S.cfg.startDate}">
+    ${S.cfg.accounts.some(startSaved) ? `<div style="display:flex;justify-content:space-between"><b>${dRu(S.cfg.startDate)}</b><span class="sub">🔒 закреплена</span></div>` : `<input class="in" type="date" id="startDate" value="${S.cfg.startDate}">`}
     <div class="muted" style="margin-top:4px">Начальные остатки вводятся на эту дату. Операции раньше неё не считаются — чтобы деньги не учлись дважды.</div>
     <details style="margin-top:6px"><summary class="muted" style="font-weight:600">Начальный остаток и сверка — как это работает?</summary>
-    <div class="muted"><p style="margin:4px 0"><b>Начальный остаток</b> вводится один раз — сколько было на счёте в дату начала учёта. Потом он закрепляется: всё остальное считается из операций. Менять его (✎) нужно, только если ошиблась при вводе.</p>
+    <div class="muted"><p style="margin:4px 0"><b>Начальный остаток</b> вводится один раз — сколько было на счёте в дату начала учёта. Нажми «Сохранить», проверь ещё раз и подтверди. После этого он закреплён навсегда и больше не показывается в счёте — посмотреть его можно в «📜 С чего начался учёт».</p>
+    <p style="margin:4px 0"><b>Ошиблась при вводе?</b> Исправляется сверкой: впиши, сколько в банке, — если больше, «Нашла средства», если меньше, «Внести списание».</p>
     <p style="margin:4px 0"><b>Сверка</b> — раз в неделю открой банк, впиши, сколько там денег сейчас, и нажми «Сверить». Совпало — ✓, всё внесено. Не совпало — приложение покажет разницу: найди пропущенную операцию или внеси «Корректировку» на разницу одной кнопкой. Цифра из банка не хранится, поэтому новые операции не вызывают ложных ошибок.</p></div></details></div>
+  ${startRecord()}
   <div class="card">${S.cfg.accounts.map((a, i) => a.closed ? closedAccRow(a, i) : `<div class="row" id="acc${i}" style="display:block">
     <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${fmt(b[a.name], accCur(a))}</span></div>
     <label class="f">Валюта счёта</label><select class="in" data-acc="${i}" data-k="cur">${CURRENCIES.map(c => `<option value="${c.code}" ${c.code === accCur(a) ? 'selected' : ''}>${c.code} — ${esc(c.name)}</option>`).join('')}</select>
@@ -1409,15 +1432,24 @@ function renderMore() {
     else a[k] = inp.value === '' ? (k === 'fact' ? null : 0) : num(inp.value);
     await saveCfg(); toast('Сохранено'); renderMore();
   }));
-  $('#startDate').addEventListener('change', async e => {
+  if ($('#startDate')) $('#startDate').addEventListener('change', async e => {
     const v = e.target.value; if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
     const early = live().filter(o => o.date < v).length;
     if (early && !confirm(`Операций раньше ${v.split('-').reverse().join('.')}: ${early}. Они перестанут учитываться. Продолжить?`)) return renderMore();
     S.cfg.startDate = v; await saveCfg(); S.month = mkey(v > today() ? v : today()); toast('Дата начала учёта: ' + v.split('-').reverse().join('.')); renderMore();
   });
-  document.querySelectorAll('[data-editstart]').forEach(b => b.onclick = () => {
-    if (!confirm('Начальный остаток меняют, только если ошиблась при вводе. Если не сходится с банком сейчас — используй «Сверить». Изменить?')) return;
-    S.editStart = +b.dataset.editstart; renderMore();
+  document.querySelectorAll('[data-startsave]').forEach(b => b.onclick = async () => {
+    const i = +b.dataset.startsave, a = S.cfg.accounts[i], raw = $('#st' + i).value.trim();
+    if (!raw) { toast('Впиши сумму (если денег не было — 0)'); return; }
+    const v = num(raw); if (!(v >= 0)) { toast('⚠ Сумма не может быть отрицательной'); return; }
+    const line = `<div class="muted" style="margin:6px 0">Счёт «${esc(a.name)}» · на ${dRu(S.cfg.startDate)}</div><div style="font-size:26px;font-weight:700;margin:6px 0">${fmt(v, accCur(a))}</div>`;
+    const ok = await askModal(`<div style="font-size:30px">🔍</div><b style="font-size:17px">Проверь ещё раз: всё верно?</b>${line}<div class="muted">После сохранения изменить нельзя. Ошибки потом исправляются только сверкой с банком.</div>`,
+      [{ t: 'Да, всё верно', v: true }, { t: 'Нет, исправить', v: false, light: true }]);
+    if (!ok) { const el = $('#st' + i); if (el) el.focus(); return; }
+    const save = await askModal(`<div style="font-size:30px">💾</div><b style="font-size:17px">Сохранить начальный остаток?</b>${line}`,
+      [{ t: 'Сохранить', v: true }, { t: 'Отмена', v: false, light: true }]);
+    if (!save) return;
+    a.start = v; a.startLocked = true; a.startSavedAt = today(); await saveCfg(); toast(`🔒 ${a.name}: начальный остаток сохранён`); renderMore();
   });
   document.querySelectorAll('[data-recon]').forEach(b => b.onclick = async () => {
     const i = +b.dataset.recon, a = S.cfg.accounts[i], raw = $('#rc' + i).value.trim();
