@@ -11,7 +11,7 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand">Жизнь <span style="font-weight:400;color:#857B93">· Финансы</span></div>
+  <div class="brand">Жизнь <span id="brandSub" style="font-weight:400;color:#857B93">· Сегодня</span></div>
   <button class="ghost" id="syncDot" style="font-size:13px;display:none"></button>
   <div class="month" id="monthBar">
     <button class="ghost" id="mPrev" aria-label="Предыдущий месяц">‹</button>
@@ -19,12 +19,13 @@
     <button class="ghost" id="mNext" aria-label="Следующий месяц">›</button>
   </div>
 </header>
+<div id="finNav" class="finnav" style="display:none"></div>
 <main id="view"></main>
 <nav class="tabs">
-  <button data-tab="overview" class="on"><span>◉</span>Обзор</button>
-  <button data-tab="history"><span>☰</span>История</button>
-  <button data-tab="add" class="plus" aria-label="Новая операция">+</button>
-  <button data-tab="budget"><span>▤</span>Бюджет</button>
+  <button data-tab="today" class="on"><span>☀</span>Сегодня</button>
+  <button data-tab="fin"><span>₸</span>Финансы</button>
+  <button data-tab="add" class="plus" aria-label="Добавить">+</button>
+  <button data-tab="plan"><span>🗓</span>План</button>
   <button data-tab="more"><span>⋯</span>Ещё</button>
 </nav>
 <div class="toast" id="toast"></div>
@@ -32,5 +33,6 @@
 <script src="app.js"></script>
 <script src="analytics.js"></script>
 <script src="report.js"></script>
+<script src="life.js"></script>
 </body>
 </html>

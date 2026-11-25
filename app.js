@@ -78,7 +78,7 @@ const DB = {
 };
 
 // ---------- Состояние ----------
-const S = { ops: [], cfg: null, month: '2026-12', tab: 'overview', edit: null, draft: null, q: '' };
+const S = { ops: [], cfg: null, life: null, month: '2026-12', tab: 'today', edit: null, draft: null, q: '' };
 function defaultCfg() {
   return {
     version: 1, updatedAt: 0, // 0 = стартовые настройки: при синхронизации их заменят настоящие с другого устройства
@@ -736,12 +736,29 @@ function goTo(key) {
   const el = sel && document.querySelector(sel);
   if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800); }
 }
-function setTab(t) { S.tab = t; document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); render(); window.scrollTo(0, 0); }
+// Разделы: «Сегодня» (день), «Финансы» (обзор, история, бюджет, аналитика, отчёт), «План», «Ещё»
+const FIN_TABS = ['overview', 'history', 'budget', 'analytics', 'report'], LIFE_TABS = ['today', 'day', 'days', 'lifeset'];
+function setTab(t) {
+  S.tab = t;
+  const nav = FIN_TABS.includes(t) ? 'fin' : LIFE_TABS.includes(t) ? 'today' : t;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === nav));
+  const bs = $('#brandSub'); if (bs) bs.textContent = '· ' + ({ fin: 'Финансы', add: 'Финансы', today: 'Сегодня', plan: 'План', more: 'Ещё' }[nav] || '');
+  render(); window.scrollTo(0, 0);
+}
+function renderFinNav() {
+  const el = $('#finNav'); if (!el) return;
+  const show = ['overview', 'history', 'budget'].includes(S.tab);
+  el.style.display = show ? '' : 'none'; if (!show) return;
+  el.innerHTML = `<div class="seg">${[['overview', '◉ Обзор'], ['history', '☰ История'], ['budget', '▤ Бюджет'], ['analytics', '📊 Аналитика']].map(([k, l]) => `<button class="chip ${S.tab === k ? 'on' : ''}" data-fin="${k}">${l}</button>`).join('')}</div>`;
+  el.querySelectorAll('[data-fin]').forEach(b => b.onclick = () => setTab(b.dataset.fin));
+}
 function render() {
   const im = $('#intModal'); if (im) im.remove();
   $('#mLabel').textContent = mlabel(S.month);
-  $('#monthBar').style.visibility = (S.tab === 'add' || S.tab === 'more' || (S.tab === 'analytics' && anState().p !== 'm') || (S.tab === 'history' && S.hf && S.hf.per !== 'month')) ? 'hidden' : 'visible';
-  ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore, analytics: renderAnalytics, report: renderReport })[S.tab]();
+  $('#monthBar').style.visibility = (!FIN_TABS.includes(S.tab) || (S.tab === 'analytics' && anState().p !== 'm') || (S.tab === 'history' && S.hf && S.hf.per !== 'month')) ? 'hidden' : 'visible';
+  renderFinNav();
+  ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore, analytics: renderAnalytics, report: renderReport,
+    today: renderToday, day: renderDay, days: renderDays, lifeset: renderLifeSet, plan: renderPlan })[S.tab]();
 }
 
 // ---------- Обзор ----------
@@ -828,7 +845,7 @@ function interestPending() {
 }
 function interestModal() {
   const old = $('#intModal'); if (old) old.remove();
-  if (S.tab !== 'overview') return;
+  if (!['overview', 'today'].includes(S.tab)) return;
   try { if (sessionStorage.getItem('zhizn-int-later')) return; } catch (e) {}
   const list = interestPending(); if (!list.length) return;
   const r = list[0], a = accByName(r.p.account); if (!a) return;
@@ -1033,7 +1050,7 @@ function renderAdd() {
   document.querySelectorAll('[data-person]').forEach(b => b.onclick = () => { sync(); d.person = b.dataset.person; renderAdd(); });
   document.querySelectorAll('[data-debtlink]').forEach(b => b.onclick = () => { sync(); d.debtId = b.dataset.debtlink; const x = debts().find(y => y.id === d.debtId); if (x && x.person) d.person = x.person; renderAdd(); });
   document.querySelectorAll('[data-paylink]').forEach(b => b.onclick = () => { sync(); d.payId = b.dataset.paylink; renderAdd(); });
-  $('#cancel').onclick = () => { const back = S.edit ? 'history' : 'overview'; S.draft = null; S.edit = null; S.autoHint = ''; setTab(back); };
+  $('#cancel').onclick = () => { const back = S.edit ? 'history' : (S.backTab || 'overview'); S.draft = null; S.edit = null; S.autoHint = ''; S.backTab = null; setTab(back); };
   $('#save').onclick = async () => {
     sync();
     const T2 = TYPE[d.type];
@@ -1066,7 +1083,7 @@ function renderAdd() {
     S.draft = null; const wasEdit = !!S.edit; S.edit = null;
     // Пришли деньги → сразу предложить разложить их по карманам
     if (!wasEdit && (op.type === 'Доход' || op.type === 'Помощь') && suggestDistribution(S.month).items.length) { S.btab = 'pockets'; S.dist = true; setTab('budget'); return; }
-    setTab(wasEdit ? 'history' : 'overview');
+    const back = S.backTab; S.backTab = null; setTab(wasEdit ? 'history' : (back || 'overview'));
   };
   if ($('#del')) $('#del').onclick = async () => {
     if (!confirm('Удалить эту операцию? Её можно будет восстановить только из резервной копии.')) return;
@@ -1634,7 +1651,7 @@ function renderMore() {
   if ($('#pinSet')) $('#pinSet').onclick = () => Lock.setup().then(renderMore);
   if ($('#pinChange')) $('#pinChange').onclick = async () => { if (await Lock.askCurrent()) Lock.setup().then(renderMore); };
   if ($('#pinOff')) $('#pinOff').onclick = async () => { if (await Lock.askCurrent()) { Lock.clear(); toast('PIN-код убран'); renderMore(); } };
-  $('#backup').onclick = () => download(`жизнь-копия-${today()}.json`, JSON.stringify({ app: 'zhizn', v: 1, at: new Date().toISOString(), cfg: S.cfg, ops: S.ops }, null, 1), 'application/json');
+  $('#backup').onclick = () => download(`жизнь-копия-${today()}.json`, JSON.stringify({ app: 'zhizn', v: 1, at: new Date().toISOString(), cfg: S.cfg, ops: S.ops, life: S.life }, null, 1), 'application/json');
   $('#restore').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
     try {
@@ -1642,6 +1659,7 @@ function renderMore() {
       if (!confirm(`Восстановить ${data.ops.length} операций из копии от ${data.at.slice(0, 10)}? Текущие данные будут объединены с копией.`)) return;
       for (const o of data.ops) { const cur = S.ops.find(x => x.id === o.id); if (!cur || (o.updatedAt || 0) > (cur.updatedAt || 0)) { await DB.put(o); } }
       if ((data.cfg.updatedAt || 0) > (S.cfg.updatedAt || 0)) { S.cfg = data.cfg; await DB.set('cfg', S.cfg); }
+      if (data.life) mergeLife(data.life);
       S.ops = await DB.all(); toast('Восстановлено'); Sync.soon(); renderMore();
     } catch (err) { toast('Не удалось прочитать файл: ' + err.message); }
   };
@@ -1723,7 +1741,7 @@ const Sync = {
       const f = list.files && list.files[0];
       let changed = 0;
       if (f) changed = await mergeData(await (await this.api(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).json());
-      const body = JSON.stringify({ app: 'zhizn', v: 1, at: new Date().toISOString(), device: DEVICE, cfg: S.cfg, ops: S.ops });
+      const body = JSON.stringify({ app: 'zhizn', v: 1, at: new Date().toISOString(), device: DEVICE, cfg: S.cfg, ops: S.ops, life: S.life });
       if (f) await this.api(`https://www.googleapis.com/upload/drive/v3/files/${f.id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body });
       else {
         const fd = new FormData();
@@ -1752,6 +1770,7 @@ async function mergeData(data) {
     if (i < 0 || (o.updatedAt || 0) > (S.ops[i].updatedAt || 0)) { await DB.put(o); if (i < 0) S.ops.push(o); else S.ops[i] = o; n++; }
   }
   if (data.cfg && (data.cfg.updatedAt || 0) > (S.cfg.updatedAt || 0)) { S.cfg = data.cfg; await DB.set('cfg', S.cfg); n++; }
+  if (data.life) n += mergeLife(data.life);
   return n;
 }
 function syncInfo() {
@@ -1837,6 +1856,7 @@ const Lock = {
     S.ops = await DB.all();
     S.cfg = (await DB.get('cfg')) || defaultCfg();
     if (!(await DB.get('cfg'))) await DB.set('cfg', S.cfg);
+    S.life = (await DB.get('life')) || { days: {}, tasks: [] };
   } catch (e) {
     $('#view').innerHTML = '<div class="warn">Не удалось открыть хранилище на устройстве. Проверь, что браузер не в режиме инкогнито.</div>'; return;
   }
@@ -1844,7 +1864,7 @@ const Lock = {
   await Rates.load();
   if ((Rates.used().length || !Rates.data) && Rates.stale() && navigator.onLine !== false) Rates.refresh().then(() => { if (S.tab !== 'add') render(); }).catch(() => {});
   const t = today(); S.month = t < S.cfg.startDate ? mkey(S.cfg.startDate) : mkey(t);
-  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { if (b.dataset.tab === 'add') { S.edit = null; S.draft = null; } setTab(b.dataset.tab); });
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { if (b.dataset.tab === 'add') return plusMenu(); setTab(b.dataset.tab === 'fin' ? 'overview' : b.dataset.tab); });
   $('#mPrev').onclick = () => { S.month = mshift(S.month, -1); render(); };
   $('#mNext').onclick = () => { S.month = mshift(S.month, 1); render(); };
   render();
