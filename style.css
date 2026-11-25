@@ -193,3 +193,45 @@ table.tsm td:not(:first-child),table.tsm th{white-space:nowrap;overflow-wrap:nor
 .tbtn{width:auto;min-width:38px;padding:0 8px;white-space:nowrap}
 .mrow>div{min-width:0}
 .mrow>div:last-child{flex:none;white-space:nowrap}
+
+/* ---------- Персонаж ---------- */
+.charmini{background:linear-gradient(135deg,var(--lilac),var(--powder));border-radius:var(--r);padding:10px 12px;margin:8px 0;cursor:pointer}
+.cm-top{display:flex;align-items:center;gap:10px}
+.cm-lvl{flex:none;width:42px;height:42px;border-radius:50%;background:var(--lilac2);color:#fff;font-weight:800;font-size:19px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(107,78,155,.3)}
+.cm-lvl.big{width:58px;height:58px;font-size:26px}
+.charcard{padding:12px}
+.xpbar{height:8px;border-radius:6px;background:rgba(255,255,255,.7);overflow:hidden;margin:5px 0 3px;border:1px solid var(--line)}
+.xpbar i{display:block;height:100%;background:var(--lilac2);border-radius:6px}
+.xpbar.season i{background:var(--c3)}
+.xpbar.boss i{background:var(--red)}
+.xpbar.thin{height:5px;margin:2px 0}
+.xpdays{display:flex;align-items:flex-end;gap:3px;height:110px;padding-top:6px}
+.xpd{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;cursor:pointer;min-width:0}
+.xpd i{display:block;width:100%;background:var(--lilac2);border-radius:4px 4px 0 0;min-height:1px}
+.xpd span{font-size:9.5px;color:var(--muted);margin-top:2px}
+details.stat{border-bottom:1px solid var(--line);padding:4px 0}
+details.stat:last-child{border-bottom:0}
+details.stat>summary{list-style:none;padding:6px 0}
+details.stat>summary::-webkit-details-marker{display:none}
+.facets{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:4px 0 8px}
+.mile{border-top:1px dashed var(--line);padding:7px 0}
+.mile.done{background:linear-gradient(90deg,var(--green),transparent)}
+.mile.half{background:linear-gradient(90deg,#FBF0D9,transparent)}
+.mst{display:inline-flex;gap:3px;flex:none}
+.mst button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:2px 7px;font-size:12px;cursor:pointer;color:var(--ink)}
+.mst button.on{background:var(--lilac2);color:#fff;border-color:var(--lilac2)}
+.mfact{margin-top:5px;padding:6px 9px;font-size:13px}
+.stedit .card{margin:6px 0}
+.medal{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.medal:last-child{border-bottom:0}
+.medal .mi{flex:none;width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:21px;background:#fff;border:3px solid var(--rc)}
+.medal.locked .mi{filter:grayscale(1);opacity:.45;border-color:var(--line)}
+.medal.locked b{color:var(--muted)}
+.quest.qdone{opacity:.8}
+.scale10{display:grid;grid-template-columns:repeat(10,1fr);gap:3px;margin-top:4px}
+.scale10 button{height:30px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:12.5px;cursor:pointer;padding:0;color:var(--ink)}
+.scale10 button.on{background:var(--lilac2);color:#fff;border-color:var(--lilac2)}
+.card .xpbar,details.stat .xpbar{background:var(--lilac)}
+.sub{font-size:12px}
+.sub:not(.pos):not(.neg){color:var(--muted)}
+.mini-btn{white-space:nowrap}

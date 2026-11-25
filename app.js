@@ -737,7 +737,7 @@ function goTo(key) {
   if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800); }
 }
 // Разделы: «Сегодня» (день), «Финансы» (обзор, история, бюджет, аналитика, отчёт), «План», «Ещё»
-const FIN_TABS = ['overview', 'history', 'budget', 'analytics', 'report'], LIFE_TABS = ['today', 'day', 'days', 'lifeset'];
+const FIN_TABS = ['overview', 'history', 'budget', 'analytics', 'report'], LIFE_TABS = ['today', 'day', 'days', 'lifeset', 'char'];
 function setTab(t) {
   S.tab = t;
   const nav = FIN_TABS.includes(t) ? 'fin' : LIFE_TABS.includes(t) ? 'today' : t;
@@ -758,7 +758,7 @@ function render() {
   $('#monthBar').style.visibility = (!FIN_TABS.includes(S.tab) || (S.tab === 'analytics' && anState().p !== 'm') || (S.tab === 'history' && S.hf && S.hf.per !== 'month')) ? 'hidden' : 'visible';
   renderFinNav();
   ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore, analytics: renderAnalytics, report: renderReport,
-    today: renderToday, day: renderDay, days: renderDays, lifeset: renderLifeSet, plan: renderPlan })[S.tab]();
+    today: renderToday, day: renderDay, days: renderDays, lifeset: renderLifeSet, plan: renderPlan, char: renderChar })[S.tab]();
 }
 
 // ---------- Обзор ----------

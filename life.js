@@ -71,8 +71,15 @@ async function putTask(t) {
 function mergeLife(other) {
   if (!other) return 0;
   const L = lifeData(); let n = 0;
-  for (const [d, rec] of Object.entries(other.days || {})) if (!L.days[d] || (rec.updatedAt || 0) > (L.days[d].updatedAt || 0)) { L.days[d] = rec; n++; }
-  for (const t of other.tasks || []) { const i = L.tasks.findIndex(x => x.id === t.id); if (i < 0 || (t.updatedAt || 0) > (L.tasks[i].updatedAt || 0)) { if (i < 0) L.tasks.push(t); else L.tasks[i] = t; n++; } }
+  // словари по ключу (дни, ачивки, колесо по неделям, Прайм по месяцам) и списки по id (дела, квесты, бонусы)
+  for (const k of ['days', 'ach', 'wheel', 'prime']) {
+    if (!other[k]) continue; if (!L[k] || typeof L[k] !== 'object') L[k] = {};
+    for (const [key, rec] of Object.entries(other[k])) if (rec && (!L[k][key] || (rec.updatedAt || 0) > (L[k][key].updatedAt || 0))) { L[k][key] = rec; n++; }
+  }
+  for (const k of ['tasks', 'quests', 'bonus']) {
+    if (!Array.isArray(other[k])) continue; if (!Array.isArray(L[k])) L[k] = [];
+    for (const t of other[k]) { const i = L[k].findIndex(x => x.id === t.id); if (i < 0 || (t.updatedAt || 0) > (L[k][i].updatedAt || 0)) { if (i < 0) L[k].push(t); else L[k][i] = t; n++; } }
+  }
   if (n) DB.set('life', S.life);
   return n;
 }
@@ -180,6 +187,7 @@ function renderToday() {
     ? `<div class="card" style="padding:10px 12px"><div class="mrow"><b>✓ Отчёт за сегодня готов</b><button class="btn small light" id="openReport" style="margin:0">Открыть</button></div></div>`
     : `<div class="card ${h >= 20 ? 'evening' : ''}" style="padding:10px 12px"><b>📝 Вечерний отчёт</b><div class="sub">${h >= 20 ? 'Самое время: как прошёл день?' : 'Можно заполнять в течение дня, отправить — вечером.'}</div><button class="btn small" id="openReport">Заполнить отчёт</button></div>`;
   $('#view').innerHTML = maturityHtml() + `<div class="hello"><div class="sub">${dayTitle(t)}</div><b>${hello}${L.name ? ', ' + esc(L.name) : ''}!</b></div>
+    ${typeof charMini === 'function' ? charMini() : ''}
     <div class="streaks">${chips}</div>${plan}${trackers}${money}<h2>Вечер</h2>${rep}
     <button class="btn light" id="openDays">📖 Лента дней</button>`;
   bindToday(t);
@@ -207,6 +215,7 @@ function bindToday(t) {
   $('#quickSpend').onclick = () => { S.edit = null; S.draft = null; S.backTab = 'today'; setTab('add'); };
   $('#openReport').onclick = () => { S.dayDate = t; setTab('day'); };
   $('#openDays').onclick = () => setTab('days');
+  const cm = $('#charMini'); if (cm) cm.onclick = () => setTab('char');
 }
 
 // ---------- Вечерний отчёт ----------
