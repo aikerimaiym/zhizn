@@ -420,6 +420,24 @@ function closeDepForm(a, bal) {
     <button class="btn small" data-closeok="${esc(a.name)}">Закрыть депозит</button>` : '<div class="err">Нет открытого счёта в этой валюте, куда перевести деньги — добавь его.</div>'}
     <button class="btn small light" data-closecancel="1">Отмена</button></div>`;
 }
+// Начальный остаток: вводится один раз, после первых операций закреплён (правка — через ✎ с подтверждением)
+const accHasOps = a => live().some(o => !isPocketOp(o) && (o.account === a.name || o.to === a.name));
+function startField(a, i) {
+  const unit = isMetal(accCur(a)) ? ', г' : '', label = `Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}${unit}`;
+  const locked = (accHasOps(a) || a.startLocked) && S.editStart !== i;
+  return locked
+    ? `<label class="f">${label}</label><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${fmt(+a.start || 0, accCur(a))}</b><span class="sub">🔒 закреплён <button class="btn small light" data-editstart="${i}" style="margin:0;padding:3px 8px">✎</button></span></div>`
+    : `<label class="f">${label}</label><input class="in" data-acc="${i}" data-k="start" inputmode="decimal" value="${a.start || ''}" placeholder="0">`;
+}
+// Сверка с банком: разовое действие — ввела сумму из банка → «Сверить» → сразу результат
+function reconField(a, i, bal) {
+  const last = a.reconciledAt ? 'последняя ' + a.reconciledAt.split('-').reverse().join('.') : 'ещё не было';
+  const pend = a.reconPending;
+  return `<label class="f">Сверка с банком · ${last}</label>
+    <div class="grid2"><input class="in" id="rc${i}" inputmode="decimal" placeholder="сколько в банке сейчас"><button class="btn small" data-recon="${i}" style="margin:0">Сверить</button></div>
+    ${pend ? `<div class="err" style="margin-top:6px">Сверка ${pend.date.split('-').reverse().join('.')}: в банке ${fmt(pend.bank, accCur(a))}, по учёту было ${fmt(pend.calc, accCur(a))} — разница ${(pend.bank - pend.calc > 0 ? '+' : '−') + fmt(Math.abs(pend.bank - pend.calc), accCur(a))}.
+      <div><button class="btn small" data-reconfix="${i}" style="margin:4px 4px 0 0">Внести корректировку на разницу</button><button class="btn small light" data-reconok="${i}" style="margin:4px 0 0">Нашла операцию — закрыть</button></div></div>` : ''}`;
+}
 function closedAccRow(a, i) {
   return `<div class="row"><span class="sub">🔒 ${esc(a.name)} · закрыт ${a.closedAt ? a.closedAt.split('-').reverse().join('.') : ''}</span><button class="btn small light" data-reopen="${i}" style="margin:0">Открыть снова</button></div>`;
 }
@@ -696,7 +714,11 @@ function renderOverview() {
   if (errs) warns.push(['warn', `⚠ Операций с ошибками: ${errs} — открой «Историю», они не в итогах`]);
   over.forEach(c => warns.push(['warn', `⚠ Перерасход: ${c.cat} — ${money(c.fact - c.plan)} сверх плана`]));
   const now = balances();
-  S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && a.fact !== undefined && r2(+a.fact) !== r2(now[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${fmt(+a.fact, accCur(a))}, по учёту ${fmt(now[a.name], accCur(a))} — найди пропущенную операцию или внеси «Корректировку»`]));
+  // Сверка: незакрытое расхождение (снимок на момент сверки, а не «живая» цифра) и напоминание раз в неделю
+  openAccs().filter(a => a.reconPending).forEach(a => { const p = a.reconPending; warns.push(['warn', `⚠ ${a.name}: при сверке ${p.date.split('-').reverse().join('.')} в банке было ${fmt(p.bank, accCur(a))}, по учёту ${fmt(p.calc, accCur(a))} — «Ещё → Счета»: найди операцию или внеси корректировку`]); });
+  const toRecon = live().length ? openAccs().filter(a => !isMetal(accCur(a)) && !a.reconPending && accHasOps(a) && (!a.reconciledAt || dDiff(today(), a.reconciledAt) >= 7)) : [];
+  if (toRecon.length) warns.push(['info', `🔎 Пора сверить с банком: ${toRecon.map(a => a.name).join(', ')} — «Ещё → Счета → Сверить» (раз в неделю)`]);
+  void now;
   if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`]);
   S.cfg.accounts.filter(a => !a.closed && depEnd(a) && dDiff(depEnd(a), today()) > 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', a.autoRenew ? `🔄 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} и продлится автоматически — в этот день проверь новую ставку` : `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`]));
   if (allPayments().length) {
@@ -1274,13 +1296,14 @@ function renderMore() {
   <div class="card" style="padding:10px 12px"><label class="f" style="margin-top:0">Дата начала учёта</label>
     <input class="in" type="date" id="startDate" value="${S.cfg.startDate}">
     <div class="muted" style="margin-top:4px">Начальные остатки вводятся на эту дату. Операции раньше неё не считаются — чтобы деньги не учлись дважды.</div>
-    <details style="margin-top:6px"><summary class="muted" style="font-weight:600">Что такое «Сейчас в банке (сверка)»?</summary>
-    <div class="muted">Проверка, не забыла ли ты внести какую-то операцию. Раз в неделю открой банк и впиши, сколько там денег на самом деле. Совпало с учётом — всё внесено ✓. Не совпало — на «Обзоре» появится подсказка: найди пропущенную операцию или внеси разницу как «Корректировка». Поле можно оставлять пустым.</div></details></div>
+    <details style="margin-top:6px"><summary class="muted" style="font-weight:600">Начальный остаток и сверка — как это работает?</summary>
+    <div class="muted"><p style="margin:4px 0"><b>Начальный остаток</b> вводится один раз — сколько было на счёте в дату начала учёта. Потом он закрепляется: всё остальное считается из операций. Менять его (✎) нужно, только если ошиблась при вводе.</p>
+    <p style="margin:4px 0"><b>Сверка</b> — раз в неделю открой банк, впиши, сколько там денег сейчас, и нажми «Сверить». Совпало — ✓, всё внесено. Не совпало — приложение покажет разницу: найди пропущенную операцию или внеси «Корректировку» на разницу одной кнопкой. Цифра из банка не хранится, поэтому новые операции не вызывают ложных ошибок.</p></div></details></div>
   <div class="card">${S.cfg.accounts.map((a, i) => a.closed ? closedAccRow(a, i) : `<div class="row" style="display:block">
     <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${fmt(b[a.name], accCur(a))}</span></div>
     <label class="f">Валюта счёта</label><select class="in" data-acc="${i}" data-k="cur">${CURRENCIES.map(c => `<option value="${c.code}" ${c.code === accCur(a) ? 'selected' : ''}>${c.code} — ${esc(c.name)}</option>`).join('')}</select>
-    <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}${isMetal(accCur(a)) ? ', г' : ''}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
-    <div><label class="f">Сейчас в банке (сверка)</label><input class="in" data-acc="${i}" data-k="fact" inputmode="numeric" value="${a.fact ?? ''}" placeholder="—"></div></div>
+    ${startField(a, i)}
+    ${reconField(a, i, b[a.name])}
     <label class="f"><input type="checkbox" data-acc="${i}" data-k="savings" ${a.savings ? 'checked' : ''}> это накопления</label>
     ${a.savings && !isMetal(accCur(a)) ? depositBlock(a, i, b[a.name]) : ''}
     <div class="grid2"><input class="in" data-acc="${i}" data-k="name" value="${esc(a.name)}"><button class="btn small light" data-delacc="${i}">Убрать счёт</button></div></div>`).join('')}
@@ -1365,6 +1388,26 @@ function renderMore() {
     if (early && !confirm(`Операций раньше ${v.split('-').reverse().join('.')}: ${early}. Они перестанут учитываться. Продолжить?`)) return renderMore();
     S.cfg.startDate = v; await saveCfg(); S.month = mkey(v > today() ? v : today()); toast('Дата начала учёта: ' + v.split('-').reverse().join('.')); renderMore();
   });
+  document.querySelectorAll('[data-editstart]').forEach(b => b.onclick = () => {
+    if (!confirm('Начальный остаток меняют, только если ошиблась при вводе. Если не сходится с банком сейчас — используй «Сверить». Изменить?')) return;
+    S.editStart = +b.dataset.editstart; renderMore();
+  });
+  document.querySelectorAll('[data-recon]').forEach(b => b.onclick = async () => {
+    const i = +b.dataset.recon, a = S.cfg.accounts[i], raw = $('#rc' + i).value.trim();
+    if (!raw) { toast('Впиши, сколько сейчас в банке'); return; }
+    const bank = num(raw), calc = r2(balances()[a.name]);
+    if (r2(bank) === calc) { a.reconciledAt = today(); delete a.reconPending; await saveCfg(); toast(`✓ ${a.name}: сходится (${fmt(calc, accCur(a))})`); }
+    else { a.reconPending = { date: today(), bank, calc }; await saveCfg(); toast(`⚠ ${a.name}: не сходится на ${fmt(Math.abs(bank - calc), accCur(a))}`); }
+    renderMore();
+  });
+  document.querySelectorAll('[data-reconfix]').forEach(b => b.onclick = async () => {
+    const a = S.cfg.accounts[+b.dataset.reconfix], p = a.reconPending; if (!p) return;
+    const diff = r2(p.bank - p.calc), now = Date.now();
+    const op = { id: uid(), type: diff > 0 ? 'Корректировка +' : 'Корректировка −', date: today(), account: a.name, amount: Math.abs(diff), cat: '', sub: '', person: '', to: '', comment: 'сверка с банком', rate: 0, amountTo: 0, createdAt: now, updatedAt: now, device: DEVICE, deleted: false };
+    if (!confirm(`Внести «${op.type}» на ${fmt(op.amount, accCur(a))}? Остаток станет как в банке.`)) return;
+    S.ops.push(op); await DB.put(op); a.reconciledAt = today(); delete a.reconPending; await saveCfg(); toast('Корректировка внесена — счёт сходится ✓'); renderMore();
+  });
+  document.querySelectorAll('[data-reconok]').forEach(b => b.onclick = async () => { const a = S.cfg.accounts[+b.dataset.reconok]; delete a.reconPending; await saveCfg(); toast('Ок. Сверь ещё раз после того, как внесёшь операцию'); renderMore(); });
   document.querySelectorAll('[data-closeacc]').forEach(b => b.onclick = () => { S.closeAcc = b.dataset.closeacc; renderMore(); });
   document.querySelectorAll('[data-closecancel]').forEach(b => b.onclick = () => { S.closeAcc = null; renderMore(); });
   document.querySelectorAll('[data-closeok]').forEach(b => b.onclick = async () => {
