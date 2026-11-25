@@ -76,3 +76,6 @@ table.t{table-layout:auto}
 table.t td{overflow-wrap:anywhere}
 input.mini{max-width:42vw}
 select.in,input.in{min-width:0;max-width:100%}
+/* Окно подтверждения (проценты по депозиту и т. п.) */
+.modal{position:fixed;inset:0;background:rgba(58,51,71,.45);display:flex;align-items:center;justify-content:center;z-index:30;padding:16px}
+.modal-box{background:#fff;border-radius:22px;padding:18px 16px;max-width:420px;width:100%;text-align:center;box-shadow:0 10px 30px rgba(58,51,71,.25);max-height:90vh;overflow:auto}

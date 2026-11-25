@@ -489,16 +489,17 @@ function payCalendar(from, to) {
     if (p.active === false) continue;
     for (const due of payDates(p, from, to)) {
       const paid = r2(payMatches(p, due).reduce((s, o) => s + opBase(o), 0));
-      const status = paid >= p.amount * 0.99 ? 'paid' : paid > 0 ? 'partial' : due < t ? 'overdue' : dDiff(due, t) <= 3 ? 'soon' : 'planned';
+      const skipped = (S.cfg.intSkipped || []).includes(p.id + '|' + due);
+      const status = skipped ? 'skipped' : paid >= p.amount * 0.99 ? 'paid' : paid > 0 ? 'partial' : due < t ? 'overdue' : dDiff(due, t) <= 3 ? 'soon' : 'planned';
       rows.push({ p, due, paid, left: r2(Math.max(0, p.amount - paid)), status });
     }
   }
   return rows.sort((a, b) => a.due.localeCompare(b.due));
 }
-const PAY_ST = { paid: ['✅', 'оплачено'], partial: ['◐', 'частично'], overdue: ['⚠', 'просрочено'], soon: ['⏳', 'скоро'], planned: ['📅', 'по плану'] };
+const PAY_ST = { skipped: ['—', 'начисления не было'], paid: ['✅', 'оплачено'], partial: ['◐', 'частично'], overdue: ['⚠', 'просрочено'], soon: ['⏳', 'скоро'], planned: ['📅', 'по плану'] };
 // Прогноз: сколько уйдёт и придёт за 7 и 30 дней и хватит ли денег до следующего поступления
 function payForecast() {
-  const t = today(), cal = payCalendar(dAdd(t, -60), dAdd(t, 400)).filter(r => r.status !== 'paid');
+  const t = today(), cal = payCalendar(dAdd(t, -60), dAdd(t, 400)).filter(r => r.status !== 'paid' && r.status !== 'skipped');
   const outs = cal.filter(r => r.p.kind === 'out'), ins = cal.filter(r => r.p.kind === 'in' && !r.p.toSavings && r.due >= t);   // проценты идут на депозит — не в «хватит ли до поступления»
   const sumTo = (list, d) => r2(list.filter(r => r.due <= d).reduce((s, r) => s + r.left, 0));
   const cash = totals(balances()).free;                         // деньги на обычных (не накопительных) счетах
@@ -510,6 +511,7 @@ function payForecast() {
 // ---------- Навигация ----------
 function setTab(t) { S.tab = t; document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); render(); window.scrollTo(0, 0); }
 function render() {
+  const im = $('#intModal'); if (im) im.remove();
   $('#mLabel').textContent = mlabel(S.month);
   $('#monthBar').style.visibility = (S.tab === 'add' || S.tab === 'more') ? 'hidden' : 'visible';
   ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore })[S.tab]();
@@ -575,6 +577,46 @@ function renderOverview() {
   ${S.cfg.accounts.some(a => accCur(a) !== baseCur()) ? `<p class="muted">Счета в другой валюте и металлы пересчитаны в ${CUR[baseCur()].sym} по текущему курсу${Rates.data ? ' (' + esc(Rates.data.src) + ', ' + esc(Rates.data.date) + ')' : ''}.</p>` : ''}
   ${people.length ? `<h2>Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
   bindMaturity();
+  interestModal();
+}
+// ---------- Подтверждение процентов по депозиту ----------
+// В день начисления (и если пропущено раньше) — окно «Подтвердите поступление процентов»: сумма по расчёту, можно поменять.
+// Подтверждение = доход «Банк → Проценты по депозиту» на депозит (входит в доходы месяца, остаток депозита растёт).
+function interestPending() {
+  const t = today(), skip = S.cfg.intSkipped || [];
+  return payCalendar(dAdd(t, -120), t).filter(r => r.p.toSavings && r.due <= t && r.status !== 'paid' && !(r.paid > 0) && !skip.includes(r.p.id + '|' + r.due));
+}
+function interestModal() {
+  const old = $('#intModal'); if (old) old.remove();
+  if (S.tab !== 'overview') return;
+  try { if (sessionStorage.getItem('zhizn-int-later')) return; } catch (e) {}
+  const list = interestPending(); if (!list.length) return;
+  const r = list[0], a = accByName(r.p.account); if (!a) return;
+  const c = accCur(a), est = interestMonthly(a, balances()[a.name]);
+  const el = document.createElement('div'); el.id = 'intModal'; el.className = 'modal';
+  el.innerHTML = `<div class="modal-box">
+    <div style="font-size:34px">💰</div>
+    <b style="font-size:17px">Подтвердите поступление процентов</b>
+    <div class="muted" style="margin:6px 0">на депозит «${esc(a.name)}» за ${dHuman(r.due)}<br>Сумма рассчитана по ставке ${fmtPct(nominalRate(a))}. Если в банке пришло другое — поменяй.</div>
+    <input class="amount" id="imAmt" inputmode="decimal" value="${String(est).replace('.', ',')}">
+    <div class="muted">${esc(CUR[c] && !CUR[c].metal ? CUR[c].sym : c)}</div>
+    <label class="f" style="text-align:left">Дата поступления</label><input class="in" type="date" id="imDate" value="${r.due}">
+    ${list.length > 1 ? `<div class="muted" style="margin-top:6px">Ещё ждут подтверждения: ${list.length - 1}</div>` : ''}
+    <div class="err" id="imErr"></div>
+    <button class="btn" id="imOk">✓ Подтвердить поступление</button>
+    <button class="btn light" id="imNo">Начисления не было</button>
+    <button class="btn light" id="imLater">Позже</button></div>`;
+  document.body.appendChild(el);
+  $('#imOk').onclick = async () => {
+    const amount = num($('#imAmt').value), date = $('#imDate').value || r.due;
+    if (!(amount > 0)) { $('#imErr').textContent = '⚠ Укажи сумму (или нажми «Начисления не было»)'; return; }
+    const now = Date.now(), op = { id: uid(), type: 'Доход', date, account: a.name, cat: 'Банк', sub: 'Проценты по депозиту', amount, person: '', to: '', comment: 'проценты по депозиту', rate: 0, amountTo: 0, payId: r.p.id, createdAt: now, updatedAt: now, device: DEVICE, deleted: false };
+    const err = validate(op); if (err) { $('#imErr').textContent = '⚠ ' + err; return; }
+    S.ops.push(op); await DB.put(op); Sync.soon();
+    toast(`Проценты +${fmt(amount, c)} на «${a.name}» ✓ · учтены в доходах`); renderOverview();
+  };
+  $('#imNo').onclick = async () => { S.cfg.intSkipped = [...(S.cfg.intSkipped || []), r.p.id + '|' + r.due]; await saveCfg(); renderOverview(); };
+  $('#imLater').onclick = () => { try { sessionStorage.setItem('zhizn-int-later', '1'); } catch (e) {} el.remove(); toast('Напомню при следующем открытии'); };
 }
 // ---------- Окончание срока депозита: «что делать со средствами?» ----------
 const matSnoozed = a => { try { return localStorage.getItem('zhizn-mat-' + a.name) === today(); } catch (e) { return false; } };
@@ -793,7 +835,7 @@ function renderPayments() {
   ${f.overdue.length ? `<div class="warn">⚠ Просрочено: ${f.overdue.map(r => esc(r.p.name) + ' (' + dHuman(r.due) + ')').join(', ')}</div>` : ''}
   <h2>Календарь</h2>
   <div class="card">${shown.length ? shown.map(r => `<div class="row"><div style="flex:1;min-width:0"><div class="t">${PAY_ST[r.status][0]} ${esc(r.p.name)}</div><div class="sub">${dHuman(r.due)} · ${r.p.kind === 'in' && r.status === 'overdue' ? 'не пришло' : r.p.kind === 'in' && r.status === 'paid' ? 'пришло' : PAY_ST[r.status][1]}${r.status === 'partial' ? ' · осталось ' + money(r.left) : ''}${r.p.kind === 'in' ? ' · поступление' : ''}</div></div>
-    <div style="text-align:right;white-space:nowrap"><b class="${r.p.kind === 'in' ? 'pos' : ''}">${r.p.kind === 'in' ? '+' : '−'}${money(r.p.amount)}</b>${r.status !== 'paid' ? `<br><button class="btn small light" data-paynow="${r.p.id}|${r.due}" style="margin:4px 0 0;padding:4px 10px">${r.p.kind === 'in' ? 'Пришло' : 'Оплатить'}</button>` : ''}</div></div>`).join('')
+    <div style="text-align:right;white-space:nowrap"><b class="${r.p.kind === 'in' ? 'pos' : ''}">${r.p.kind === 'in' ? '+' : '−'}${money(r.p.amount)}</b>${r.status !== 'paid' && r.status !== 'skipped' ? `<br><button class="btn small light" data-paynow="${r.p.id}|${r.due}" style="margin:4px 0 0;padding:4px 10px">${r.p.kind === 'in' ? 'Пришло' : 'Оплатить'}</button>` : ''}</div></div>`).join('')
     : '<div class="row muted">Платежей пока нет. Добавь первый ниже — например, абонемент в зал, связь, рассрочку или стипендию.</div>'}</div>
   <h2>${ed ? 'Правка платежа' : 'Новый платёж'}</h2>
   <div class="card" style="padding:10px 12px">${payForm(p0, accOpts)}</div>
