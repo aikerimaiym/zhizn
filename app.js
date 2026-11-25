@@ -287,8 +287,17 @@ function pocketState(M) {
   const t = totals(balances(M));
   for (const p of Object.values(st)) if (p.linkSavings) p.bal = t.sav;
   for (const p of Object.values(st)) p.bal = r2(p.bal);
-  const inPockets = r2(Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + p.bal, 0));
-  return { st, list: list.map(p => st[p.name]), free: r2(t.free - inPockets), total: t.total, inPockets, savings: t.sav, planTotal: list.reduce((s, p) => s + st[p.name].plan, 0) };
+  const sumIn = () => r2(Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + p.bal, 0));
+  // Авто-покрытие: если трата больше кармана, разница сама берётся из «Свободно» (у свободных денег нет назначения).
+  // Ошибка остаётся, только если свободных денег не хватило.
+  let free = r2(t.free - Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + Math.max(0, p.bal), 0));   // по-настоящему свободные: минус карманов их не увеличивает
+  const ordK = ['mandatory', 'saving', 'flexible', 'buffer'];
+  for (const p of Object.values(st).filter(p => !p.linkSavings && p.kind !== 'goal' && p.bal < 0).sort((a, b) => ordK.indexOf(a.kind) - ordK.indexOf(b.kind))) {
+    if (free <= 0) break;
+    const c = r2(Math.min(free, -p.bal)); p.bal = r2(p.bal + c); p.auto = c; free = r2(free - c);
+  }
+  const inPockets = r2(Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + Math.max(0, p.bal), 0)); void sumIn;
+  return { st, list: list.map(p => st[p.name]), free, total: t.total, inPockets, savings: t.sav, planTotal: list.reduce((s, p) => s + st[p.name].plan, 0) };
 }
 // Предложение распределения по правилу: обязательные → накопительные → гибкие → буфер до 10% плана. Остаток — в «Свободно» (цели — следующий этап).
 function suggestDistribution(M, avail) {
@@ -691,6 +700,22 @@ function debtLinkRow(d) {
 }
 
 // ---------- Навигация ----------
+// Переход по предупреждению «Внимание»: открыть нужный экран и подсветить место
+function goTo(key) {
+  const [k, arg] = [key.split(':')[0], key.slice(key.indexOf(':') + 1)];
+  let sel = null;
+  if (k === 'hist') setTab('history');
+  else if (['plan', 'pockets', 'pay', 'goals', 'dist', 'pocket'].includes(k)) {
+    S.btab = { plan: 'plan', pay: 'pay', goals: 'goals' }[k] || 'pockets'; S.dist = k === 'dist'; setTab('budget');
+    if (k === 'pocket') sel = `[data-pocketrow="${CSS.escape(arg)}"]`;
+  } else {
+    setTab('more');
+    if (k === 'cur') sel = '#secCur'; else if (k === 'cat') sel = '#secCat';
+    else { const i = S.cfg.accounts.findIndex(a => a.name === arg); sel = k === 'acc' && key.includes(':') && i >= 0 ? '#acc' + i : '#secAcc'; }
+  }
+  const el = sel && document.querySelector(sel);
+  if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800); }
+}
 function setTab(t) { S.tab = t; document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); render(); window.scrollTo(0, 0); }
 function render() {
   const im = $('#intModal'); if (im) im.remove();
@@ -711,33 +736,33 @@ function renderOverview() {
   const errs = live().filter(o => validate(o)).length;
   const over = bud.cats.filter(c => c.plan > 0 && c.fact > c.plan);
   const warns = [];
-  if (errs) warns.push(['warn', `⚠ Операций с ошибками: ${errs} — открой «Историю», они не в итогах`]);
-  over.forEach(c => warns.push(['warn', `⚠ Перерасход: ${c.cat} — ${money(c.fact - c.plan)} сверх плана`]));
+  if (errs) warns.push(['warn', `⚠ Операций с ошибками: ${errs} — открой «Историю», они не в итогах`, 'hist']);
+  over.forEach(c => warns.push(['warn', `⚠ Перерасход: ${c.cat} — ${money(c.fact - c.plan)} сверх плана`, 'plan']));
   const now = balances();
   // Сверка: незакрытое расхождение (снимок на момент сверки, а не «живая» цифра) и напоминание раз в неделю
-  openAccs().filter(a => a.reconPending).forEach(a => { const p = a.reconPending; warns.push(['warn', `⚠ ${a.name}: при сверке ${p.date.split('-').reverse().join('.')} в банке было ${fmt(p.bank, accCur(a))}, по учёту ${fmt(p.calc, accCur(a))} — «Ещё → Счета»: найди операцию или внеси корректировку`]); });
+  openAccs().filter(a => a.reconPending).forEach(a => { const p = a.reconPending; warns.push(['warn', `⚠ ${a.name}: при сверке ${p.date.split('-').reverse().join('.')} в банке было ${fmt(p.bank, accCur(a))}, по учёту ${fmt(p.calc, accCur(a))} — «Ещё → Счета»: найди операцию или внеси корректировку`, 'acc:' + a.name]); });
   const toRecon = live().length ? openAccs().filter(a => !isMetal(accCur(a)) && !a.reconPending && accHasOps(a) && (!a.reconciledAt || dDiff(today(), a.reconciledAt) >= 7)) : [];
-  if (toRecon.length) warns.push(['info', `🔎 Пора сверить с банком: ${toRecon.map(a => a.name).join(', ')} — «Ещё → Счета → Сверить» (раз в неделю)`]);
+  if (toRecon.length) warns.push(['info', `🔎 Пора сверить с банком: ${toRecon.map(a => a.name).join(', ')} — «Ещё → Счета → Сверить» (раз в неделю)`, 'acc:' + toRecon[0].name]);
   void now;
-  if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`]);
-  S.cfg.accounts.filter(a => !a.closed && depEnd(a) && dDiff(depEnd(a), today()) > 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', a.autoRenew ? `🔄 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} и продлится автоматически — в этот день проверь новую ставку` : `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`]));
+  if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`, 'pockets']);
+  S.cfg.accounts.filter(a => !a.closed && depEnd(a) && dDiff(depEnd(a), today()) > 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', a.autoRenew ? `🔄 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} и продлится автоматически — в этот день проверь новую ставку` : `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`, 'acc:' + a.name]));
   if (allPayments().length) {
     const pf = payForecast(), soon = payCalendar(today(), dAdd(today(), 3)).filter(r => r.p.kind === 'out' && r.status !== 'paid');
-    pf.overdue.forEach(r => warns.push(['warn', `⚠ Просрочен платёж «${r.p.name}» (${dHuman(r.due)}) — ${money(r.left)}`]));
-    soon.forEach(r => warns.push(['info', `📅 Скоро платёж «${r.p.name}»: ${dHuman(r.due)}, ${money(r.left)}`]));
-    if (!pf.enough) warns.push(['warn', `⚠ ${pf.next ? 'До «' + pf.next.p.name + '»' : 'За 30 дней'} платежей на ${money(pf.need)}, на счетах ${money(pf.cash)} — не хватает ${money(pf.need - pf.cash)}`]);
+    pf.overdue.forEach(r => warns.push(['warn', `⚠ Просрочен платёж «${r.p.name}» (${dHuman(r.due)}) — ${money(r.left)}`, 'pay']));
+    soon.forEach(r => warns.push(['info', `📅 Скоро платёж «${r.p.name}»: ${dHuman(r.due)}, ${money(r.left)}`, 'pay']));
+    if (!pf.enough) warns.push(['warn', `⚠ ${pf.next ? 'До «' + pf.next.p.name + '»' : 'За 30 дней'} платежей на ${money(pf.need)}, на счетах ${money(pf.cash)} — не хватает ${money(pf.need - pf.cash)}`, 'pay']);
   }
-  negPockets.forEach(p => warns.push(['warn', `⚠ Карман «${p.name}» в минусе на ${money(-p.bal)} — покрой его во «Бюджет → Карманы»`]));
-  if (ps.free > 0 && ps.inPockets === 0 && live().length) warns.push(['info', `ℹ ${money(ps.free)} без назначения — разложи по карманам: «Бюджет → Карманы»`]);
-  if (missing.length) warns.push(['warn', `⚠ Нет курса для: ${missing.join(', ')} — эти счета не вошли в итоги. Обнови курсы: «Ещё → Валюты и курсы»`]);
+  negPockets.forEach(p => warns.push(['warn', `⚠ Карман «${p.name}» в минусе на ${money(-p.bal)} — не хватило свободных денег, покрой его из других карманов`, 'pocket:' + p.name]));
+  if (ps.free > 0 && ps.inPockets === 0 && live().length) warns.push(['info', `ℹ ${money(ps.free)} без назначения — разложи по карманам: «Бюджет → Карманы»`, 'dist']);
+  if (missing.length) warns.push(['warn', `⚠ Нет курса для: ${missing.join(', ')} — эти счета не вошли в итоги. Обнови курсы: «Ещё → Валюты и курсы»`, 'cur']);
   if (goals().some(g => !g.archived)) {
     const gsum = goalsSummary(pocketState(mkey(today())));
-    gsum.infos.filter(i => i.late).slice(0, 2).forEach(i => warns.push(['warn', `⚠ Срок цели «${i.g.name}» прошёл — осталось накопить ${money(i.rest)}. Поменяй срок или сумму в «Бюджет → Цели»`]));
-    gsum.infos.filter(i => !i.done && !i.late && i.g.deadline && !i.onTrack).slice(0, 2).forEach(i => warns.push(['info', `🎯 Цель «${i.g.name}» отстаёт: нужно ${money(i.need)}/мес${i.pace ? ', сейчас ' + money(i.pace) + '/мес' : ''}`]));
-    if (gsum.extra > 0) warns.push(['info', `🎯 Чтобы успеть ко всем целям, не хватает ${money(gsum.extra)} в месяц`]);
+    gsum.infos.filter(i => i.late).slice(0, 2).forEach(i => warns.push(['warn', `⚠ Срок цели «${i.g.name}» прошёл — осталось накопить ${money(i.rest)}. Поменяй срок или сумму в «Бюджет → Цели»`, 'goals']));
+    gsum.infos.filter(i => !i.done && !i.late && i.g.deadline && !i.onTrack).slice(0, 2).forEach(i => warns.push(['info', `🎯 Цель «${i.g.name}» отстаёт: нужно ${money(i.need)}/мес${i.pace ? ', сейчас ' + money(i.pace) + '/мес' : ''}`, 'goals']));
+    if (gsum.extra > 0) warns.push(['info', `🎯 Чтобы успеть ко всем целям, не хватает ${money(gsum.extra)} в месяц`, 'goals']);
   }
-  if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»']);
-  if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»']);
+  if (!bud.plan) warns.push(['info', 'ℹ План на месяц пуст — задай «План в месяц» в разделе «Ещё → Категории»', 'cat']);
+  if (!S.cfg.accounts.some(a => +a.start)) warns.push(['info', 'ℹ Укажи начальные остатки счетов: «Ещё → Счета»', 'acc']);
   if (!warns.length) warns.push(['ok', '✓ Всё в порядке']);
   const topCats = bud.cats.filter(c => c.plan || c.fact).sort((a, b) => b.fact - a.fact);
   const people = S.cfg.people.map(p => ({ p: p.name, v: live().filter(o => o.person === p.name && mkey(o.date) === m && !validate(o) && TYPE[o.type].sign > 0).reduce((s, o) => s + opBase(o), 0) })).filter(x => x.v);
@@ -746,7 +771,7 @@ function renderOverview() {
     <div class="kpi blue"><div class="l">Всего денег</div><div class="v">${money(total)}</div><div class="s">на конец месяца</div></div>
     <div class="kpi lilac"><div class="l">Свободно</div><div class="v ${ps.free < 0 ? 'neg' : ''}">${money(ps.free)}</div><div class="s">не в карманах · в карманах ${money(ps.inPockets)}</div></div>
     <div class="kpi green"><div class="l">Накопления</div><div class="v">${money(sav)}</div><div class="s">${S.cfg.accounts.some(a => isMetal(accCur(a))) ? 'вкл. металлы' : '&nbsp;'}</div></div>
-    <div class="kpi powder"><div class="l">Сальдо месяца</div><div class="v ${saldo < 0 ? 'neg' : ''}">${money(saldo)}</div><div class="s">отложено ${inc + help ? pct(saldo / (inc + help)) : '–'}</div></div>
+    <div class="kpi powder"><div class="l">Сальдо месяца</div><div class="v ${saldo < 0 ? 'neg' : ''}">${money(saldo)}</div><div class="s">пришло − потрачено · отложено ${inc + help ? pct(saldo / (inc + help)) : '–'}</div></div>
   </div>
   <h2>Месяц</h2>
   <div class="card">
@@ -756,13 +781,14 @@ function renderOverview() {
     ${debts().length || assets().length ? `<div class="row"><span>Чистый капитал <span class="sub">· Бюджет → Капитал</span></span><b>${money(capital().net)}</b></div>` : ''}
     <div class="row"><span class="sub">к прошлому месяцу</span><span class="sub">${prevExp ? (exp >= prevExp ? '+' : '') + pct(exp / prevExp - 1) + ' расходов' : '–'}</span></div>
   </div>
-  <h2>Внимание</h2>${warns.map(([c, t]) => `<div class="${c}">${esc(t)}</div>`).join('')}
+  <h2>Внимание</h2>${warns.map(([c, t, go]) => go ? `<div class="${c} go" role="button" tabindex="0" data-go="${esc(go)}">${esc(t)}<span class="goarr">›</span></div>` : `<div class="${c}">${esc(t)}</div>`).join('')}
   <h2>Бюджет по категориям</h2>
   <div class="card">${topCats.length ? topCats.map(catBar).join('') : '<div class="row muted">Пока нет плана и расходов</div>'}</div>
   <h2>Счета</h2>
   <div class="card">${S.cfg.accounts.filter(a => !a.closed || r2(b[a.name])).map(a => accRow(a, b[a.name])).join('')}</div>
   ${S.cfg.accounts.some(a => accCur(a) !== baseCur()) ? `<p class="muted">Счета в другой валюте и металлы пересчитаны в ${CUR[baseCur()].sym} по текущему курсу${Rates.data ? ' (' + esc(Rates.data.src) + ', ' + esc(Rates.data.date) + ')' : ''}.</p>` : ''}
   ${people.length ? `<h2>Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
+  document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => goTo(el.dataset.go));
   bindMaturity();
   interestModal();
 }
@@ -1169,8 +1195,9 @@ function pocketRow(p) {
   const detail = p.linkSavings ? 'накопительные счета · пополняется переводом на депозит'
     : p.kind === 'buffer' ? `цель: ${money(0.1 * pocketState(S.month).planTotal)} (10% плана)`
     : p.kind === 'goal' ? `в этом месяце: +${money(Math.max(0, p.inM))} · подробно — «Бюджет → Цели»`
-    : `в этом месяце: +${money(Math.max(0, p.inM))} · потрачено ${money(p.spentM)} · план ${money(p.plan)}${p.kind === 'flexible' ? ' · остаток вернётся в «Свободно» 1-го' : ''}`;
-  return `<div class="row" style="display:block"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">${k.i} ${esc(p.label || p.name)}</span><b class="${neg ? 'neg' : ''}">${money(p.bal)}</b></div>
+    : `в этом месяце: +${money(Math.max(0, p.inM))} · потрачено ${money(p.spentM)} · план ${money(p.plan)}${p.auto ? ' · ' + money(p.auto) + ' взято из «Свободно»' : ''}${p.kind === 'flexible' ? ' · остаток вернётся в «Свободно» 1-го' : ''}`;
+  const attr = ` data-pocketrow="${esc(p.name)}"`;
+  return `<div class="row"${attr} style="display:block"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">${k.i} ${esc(p.label || p.name)}</span><b class="${neg ? 'neg' : ''}">${money(p.bal)}</b></div>
     <div class="sub">${k.l} · ${detail}</div>
     ${neg && !p.linkSavings ? `<div class="err">Перерасход ${money(-p.bal)} <button class="btn small" data-cover="${esc(p.name)}" style="margin:4px 0 0">Покрыть</button></div>` : ''}</div>`;
 }
@@ -1292,14 +1319,14 @@ function renderPlanFact() {
 function renderMore() {
   const b = balances();
   $('#view').innerHTML = `
-  <h2>Счета</h2>
+  <h2 id="secAcc">Счета</h2>
   <div class="card" style="padding:10px 12px"><label class="f" style="margin-top:0">Дата начала учёта</label>
     <input class="in" type="date" id="startDate" value="${S.cfg.startDate}">
     <div class="muted" style="margin-top:4px">Начальные остатки вводятся на эту дату. Операции раньше неё не считаются — чтобы деньги не учлись дважды.</div>
     <details style="margin-top:6px"><summary class="muted" style="font-weight:600">Начальный остаток и сверка — как это работает?</summary>
     <div class="muted"><p style="margin:4px 0"><b>Начальный остаток</b> вводится один раз — сколько было на счёте в дату начала учёта. Потом он закрепляется: всё остальное считается из операций. Менять его (✎) нужно, только если ошиблась при вводе.</p>
     <p style="margin:4px 0"><b>Сверка</b> — раз в неделю открой банк, впиши, сколько там денег сейчас, и нажми «Сверить». Совпало — ✓, всё внесено. Не совпало — приложение покажет разницу: найди пропущенную операцию или внеси «Корректировку» на разницу одной кнопкой. Цифра из банка не хранится, поэтому новые операции не вызывают ложных ошибок.</p></div></details></div>
-  <div class="card">${S.cfg.accounts.map((a, i) => a.closed ? closedAccRow(a, i) : `<div class="row" style="display:block">
+  <div class="card">${S.cfg.accounts.map((a, i) => a.closed ? closedAccRow(a, i) : `<div class="row" id="acc${i}" style="display:block">
     <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${fmt(b[a.name], accCur(a))}</span></div>
     <label class="f">Валюта счёта</label><select class="in" data-acc="${i}" data-k="cur">${CURRENCIES.map(c => `<option value="${c.code}" ${c.code === accCur(a) ? 'selected' : ''}>${c.code} — ${esc(c.name)}</option>`).join('')}</select>
     ${startField(a, i)}
@@ -1308,7 +1335,7 @@ function renderMore() {
     ${a.savings && !isMetal(accCur(a)) ? depositBlock(a, i, b[a.name]) : ''}
     <div class="grid2"><input class="in" data-acc="${i}" data-k="name" value="${esc(a.name)}"><button class="btn small light" data-delacc="${i}">Убрать счёт</button></div></div>`).join('')}
     <button class="btn small" id="addAcc">+ Счёт</button></div>
-  <h2>Валюты и курсы</h2>
+  <h2 id="secCur">Валюты и курсы</h2>
   <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работают валюты и золото?</summary>
   <div class="muted" style="padding-bottom:8px">
     <p style="margin:4px 0"><b>У каждого счёта своя валюта</b> (выбирается выше): тенге, доллары, евро… Для золота и серебра выбери «Золото (граммы)» — счёт будет в граммах.</p>
@@ -1326,7 +1353,7 @@ function renderMore() {
     <button class="btn small" id="refreshRates">↻ Обновить курсы</button>
     <div class="muted" style="margin-top:6px">${Rates.data ? `Курсы: ${esc(Rates.data.src)}, на ${esc(Rates.data.date)}; загружено ${new Date(Rates.data.fetchedAt).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : 'Курсы ещё не загружались.'} Источники: <a href="https://github.com/fawazahmed0/exchange-api" target="_blank" rel="noopener">Currency API</a>, запасной — <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Rates By Exchange Rate API</a>.</div>
   </div>
-  <h2>Категории и план в месяц</h2>
+  <h2 id="secCat">Категории и план в месяц</h2>
   <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как работает «План в месяц»?</summary>
   <div class="muted" style="padding-bottom:8px">
     <p style="margin:4px 0">Впиши, <b>сколько обычно тратишь</b> на подкатегорию <b>в среднем месяце</b>. Эта сумма сама становится планом <b>для каждого месяца</b> — заполнять заново не нужно.</p>

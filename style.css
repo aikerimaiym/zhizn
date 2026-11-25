@@ -79,3 +79,9 @@ select.in,input.in{min-width:0;max-width:100%}
 /* Окно подтверждения (проценты по депозиту и т. п.) */
 .modal{position:fixed;inset:0;background:rgba(58,51,71,.45);display:flex;align-items:center;justify-content:center;z-index:30;padding:16px}
 .modal-box{background:#fff;border-radius:22px;padding:18px 16px;max-width:420px;width:100%;text-align:center;box-shadow:0 10px 30px rgba(58,51,71,.25);max-height:90vh;overflow:auto}
+/* Кликабельные предупреждения «Внимание» и подсветка места после перехода */
+.go{cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.go:active{filter:brightness(.95)}
+.goarr{font-size:20px;font-weight:700;opacity:.55;flex:none}
+.flash{animation:flash 1.8s ease}
+@keyframes flash{0%,60%{box-shadow:0 0 0 3px var(--lilac2);background:var(--lilac)}100%{box-shadow:none}}
