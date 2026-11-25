@@ -53,10 +53,10 @@ function anCmpRange(r) {
 }
 const accOK = o => { const a = anState().acc; return !a || o.account === a || o.to === a; };
 const catOK = o => { const c = anState().cat; return !c || o.type !== 'Расход' || o.cat === c; };
-function opsIn(from, to) { return live().filter(o => !isPocketOp(o) && o.date >= from && o.date <= to && !validate(o) && accOK(o) && catOK(o)); }
-function sumsIn(from, to) {
+function opsIn(from, to, raw) { return live().filter(o => !isPocketOp(o) && o.date >= from && o.date <= to && !validate(o) && (raw || (accOK(o) && catOK(o)))); }
+function sumsIn(from, to, raw) {
   const s = { inc: 0, help: 0, exp: 0, loanIn: 0, back: 0, loanOut: 0, repay: 0 };
-  for (const o of opsIn(from, to)) {
+  for (const o of opsIn(from, to, raw)) {
     const v = opBase(o);
     if (o.type === 'Доход') s.inc += v; else if (o.type === 'Помощь') s.help += v; else if (o.type === 'Расход') s.exp += v;
     else if (o.type === 'Заём получен') s.loanIn += v; else if (o.type === 'Мне вернули долг') s.back += v;
@@ -320,12 +320,13 @@ function renderAnalytics() {
     <table class="t" style="margin-top:6px">${S.cfg.accounts.map(x => `<tr><td>${esc(x.name)}${x.closed ? ' <span class="sub">· закрыт</span>' : ''}</td><td>${fmt(bb[x.name], accCur(x))}</td></tr>`).join('')}<tr><th>Всего</th><th>${money(totals(bb).total)}</th></tr></table>
     <div class="muted">На ${bM === cur ? 'сегодня' : dRu2(mEnd(bM))}. Можно выбрать конец любого месяца или года (декабрь).</div></div>`;
 
-  $('#view').innerHTML = `<button class="ghost" id="anBack" style="font-size:15px;padding:4px 0">‹ Обзор</button>
+  $('#view').innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center"><button class="ghost" id="anBack" style="font-size:15px;padding:4px 0">‹ Обзор</button><button class="btn small light" id="anReport" style="margin:0">📄 Отчёт за месяц</button></div>
     <h2 style="margin-top:4px">📊 Подробная аналитика</h2>${filt}${a.cat ? `<div class="info">Фильтр «${esc(a.cat)}» применяется к расходам; доходы показаны полностью.</div>` : ''}
     ${sumBlock}${dyn}${where}${planFact}${avgBlock}${income}${pockGoals}${capBlock}${yearBlock}${balBlock}
     <p class="muted">Суммы в ${esc(CUR[baseCur()].sym)}; счета в другой валюте пересчитаны по курсу операции или текущему курсу. Ошибочные операции в итоги не входят.</p>`;
 
   $('#anBack').onclick = () => setTab('overview');
+  $('#anReport').onclick = () => setTab('report');
   document.querySelectorAll('[data-anp]').forEach(b => b.onclick = () => { a.p = b.dataset.anp; if (a.p === 'm') S.month = S.month || cur; renderAnalytics(); });
   document.querySelectorAll('[data-ancmp]').forEach(b => b.onclick = () => { a.cmp = b.dataset.ancmp; renderAnalytics(); });
   if ($('#anY')) $('#anY').onchange = e => { a.y = e.target.value; renderAnalytics(); };

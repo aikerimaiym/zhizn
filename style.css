@@ -127,3 +127,29 @@ table.tsm .sub.neg{color:var(--red)} table.tsm .sub.pos{color:var(--greenInk)}
 table.tsm{font-size:12px}
 table.tsm th,table.tsm td{padding:6px 3px}
 table.tsm td:not(:first-child),table.tsm th{white-space:nowrap;overflow-wrap:normal}
+
+/* Быстрый ввод */
+.quick{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 2px}
+.quick .chip{background:var(--lilac);border-color:var(--lilac)}
+/* История: итог по найденному */
+.hsum{font-size:13px;margin:4px 2px 2px}
+.hsum .sub{font-size:11.5px;color:var(--muted)}
+/* Замок PIN */
+.lock{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px}
+.lock-box{width:100%;max-width:320px;text-align:center}
+.pin-dots{display:flex;justify-content:center;gap:12px;margin:16px 0 6px}
+.pin-dots i{width:14px;height:14px;border-radius:50%;border:2px solid var(--lilac2)}
+.pin-dots i.on{background:var(--lilac2)}
+.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
+.keys button{height:58px;border-radius:18px;border:1px solid var(--line);background:#fff;font-size:22px;font-weight:600;color:var(--ink);cursor:pointer}
+.keys button:active{background:var(--lilac)}
+.keys .kok{background:var(--lilac2);color:#fff;border-color:var(--lilac2)}
+/* Отчёт */
+.rp-title{font-size:19px;color:var(--accent);margin:8px 0 2px}
+@media print{
+  .top,.tabs,.noprint,.toast,.viztip{display:none!important}
+  html,body{background:#fff;padding:0}
+  main{max-width:none;padding:0}
+  .card{break-inside:avoid;border-color:#ccc}
+  h2{break-after:avoid}
+}

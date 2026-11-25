@@ -740,8 +740,8 @@ function setTab(t) { S.tab = t; document.querySelectorAll('.tabs button').forEac
 function render() {
   const im = $('#intModal'); if (im) im.remove();
   $('#mLabel').textContent = mlabel(S.month);
-  $('#monthBar').style.visibility = (S.tab === 'add' || S.tab === 'more' || (S.tab === 'analytics' && anState().p !== 'm')) ? 'hidden' : 'visible';
-  ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore, analytics: renderAnalytics })[S.tab]();
+  $('#monthBar').style.visibility = (S.tab === 'add' || S.tab === 'more' || (S.tab === 'analytics' && anState().p !== 'm') || (S.tab === 'history' && S.hf && S.hf.per !== 'month')) ? 'hidden' : 'visible';
+  ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore, analytics: renderAnalytics, report: renderReport })[S.tab]();
 }
 
 // ---------- Обзор ----------
@@ -772,6 +772,10 @@ function renderOverview() {
     soon.forEach(r => warns.push(['info', `📅 Скоро платёж «${r.p.name}»: ${dHuman(r.due)}, ${money(r.left)}`, 'pay']));
     if (!pf.enough) warns.push(['warn', `⚠ ${pf.next ? 'До «' + pf.next.p.name + '»' : 'За 30 дней'} платежей на ${money(pf.need)}, на счетах ${money(pf.cash)} — не хватает ${money(pf.need - pf.cash)}`, 'pay']);
   }
+  const buf = ps.list.find(p => p.kind === 'buffer'), bufT = r2(0.1 * ps.planTotal);
+  if (buf && bufT > 0 && buf.bal < bufT * 0.3) warns.push(buf.bal <= 0
+    ? ['info', `ℹ Буфер пуст: нужно ${money(bufT)} (10% плана) — пополни при следующем поступлении`, 'pockets']
+    : ['warn', `⚠ Буфер почти израсходован: осталось ${money(buf.bal)} из ${money(bufT)}`, 'pockets']);
   negPockets.forEach(p => warns.push(['warn', `⚠ Карман «${p.name}» в минусе на ${money(-p.bal)} — не хватило свободных денег, покрой его из других карманов`, 'pocket:' + p.name]));
   if (ps.free > 0 && ps.inPockets === 0 && live().length) warns.push(['info', `ℹ ${money(ps.free)} без назначения — разложи по карманам: «Бюджет → Карманы»`, 'dist']);
   if (missing.length) warns.push(['warn', `⚠ Нет курса для: ${missing.join(', ')} — эти счета не вошли в итоги. Обнови курсы: «Ещё → Валюты и курсы»`, 'cur']);
@@ -925,14 +929,31 @@ function catBar(c) {
 
 // ---------- История ----------
 function renderHistory() {
+  const f = S.hf || (S.hf = { per: 'month', from: '', to: '', type: '', cat: '', acc: '', person: '' });
   const q = S.q.toLowerCase();
-  const list = live().filter(o => !isPocketOp(o) && mkey(o.date) === S.month).filter(o => !q || [o.type, o.cat, o.sub, o.person, o.comment, o.account, String(o.amount)].join(' ').toLowerCase().includes(q))
+  const inPer = o => f.per === 'all' ? true : f.per === 'range' ? (!f.from || o.date >= f.from) && (!f.to || o.date <= f.to) : mkey(o.date) === S.month;
+  const list = live().filter(o => !isPocketOp(o) && inPer(o) && (!f.type || o.type === f.type) && (!f.cat || o.cat === f.cat) && (!f.acc || o.account === f.acc || o.to === f.acc) && (!f.person || o.person === f.person))
+    .filter(o => !q || [o.type, o.cat, o.sub, o.person, o.comment, o.account, String(o.amount)].join(' ').toLowerCase().includes(q))
     .sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt));
-  let html = `<input class="in search" id="q" placeholder="Поиск: категория, комментарий, сумма…" value="${esc(S.q)}">`;
+  const nF = ['type', 'cat', 'acc', 'person'].filter(k => f[k]).length + (f.per !== 'month' ? 1 : 0);
+  let inS = 0, outS = 0;
+  for (const o of list) { const T = TYPE[o.type]; if (validate(o) || !T || T.to) continue; if (T.sign > 0) inS += opBase(o); else outS += opBase(o); }
+  const cats = [...new Set([...S.cfg.exp.map(c => c.cat), ...S.cfg.inc.map(c => c.cat)])];
+  const sel = (k, opts) => `<select class="in" data-hf="${k}"><option value="">Все</option>${opts.map(v => `<option ${v === f[k] ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+  let html = `<input class="in search" id="q" placeholder="Поиск: категория, где/что, сумма…" value="${esc(S.q)}">
+  <details class="card" id="hfBox" ${S.hfOpen ? 'open' : ''} style="padding:4px 12px"><summary style="font-weight:600">⚙ Фильтры${nF ? ` <span class="sub">(${nF})</span>` : ''}</summary>
+    <div class="seg">${[['month', 'Месяц'], ['range', 'Свои даты'], ['all', 'Всё время']].map(([k, l]) => `<button class="chip ${f.per === k ? 'on' : ''}" data-hper="${k}">${l}</button>`).join('')}</div>
+    ${f.per === 'month' ? '<div class="muted" style="margin-top:4px">Месяц — стрелками вверху</div>' : ''}
+    ${f.per === 'range' ? `<div class="grid2"><div><label class="f">С</label><input class="in" type="date" id="hfFrom" value="${f.from}"></div><div><label class="f">По</label><input class="in" type="date" id="hfTo" value="${f.to}"></div></div>` : ''}
+    <div class="grid2"><div><label class="f">Тип</label>${sel('type', TYPES.map(x => x.t))}</div><div><label class="f">Категория</label>${sel('cat', cats)}</div></div>
+    <div class="grid2"><div><label class="f">Счёт</label>${sel('acc', S.cfg.accounts.map(a => a.name))}</div><div><label class="f">Человек</label>${sel('person', S.cfg.people.map(p => p.name))}</div></div>
+    ${nF ? '<button class="btn small light" id="hfReset" style="margin-bottom:8px">Сбросить фильтры</button>' : '<div style="height:8px"></div>'}
+  </details>
+  <div class="hsum">Найдено: <b>${list.length}</b> · пришло <b class="pos">+${money(inS)}</b> · ушло <b class="neg">−${money(outS)}</b><div class="sub">без переводов между своими счетами и ошибочных операций</div></div>`;
   let day = '';
-  if (!list.length) html += '<div class="card"><div class="row muted">В этом месяце операций нет. Нажми «+».</div></div>';
+  if (!list.length) html += `<div class="card"><div class="row muted">${nF || q ? 'Ничего не найдено — поменяй фильтры или поиск.' : 'В этом месяце операций нет. Нажми «+».'}</div></div>`;
   for (const o of list) {
-    if (o.date !== day) { if (day) html += '</div>'; day = o.date; const d = new Date(o.date + 'T00:00'); html += `<div class="day">${d.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'long' })}</div><div class="card">`; }
+    if (o.date !== day) { if (day) html += '</div>'; day = o.date; const d = new Date(o.date + 'T00:00'); html += `<div class="day">${d.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'long', ...(f.per !== 'month' ? { year: 'numeric' } : {}) })}</div><div class="card">`; }
     const T = TYPE[o.type], err = validate(o);
     const sign = !T ? '' : T.to ? '⇄ ' : T.sign > 0 ? '+' : '−';
     const what = T && T.grp ? `${o.cat} · ${o.sub}` : (o.person || (T && T.to ? `${o.account} → ${o.to}` : o.type));
@@ -944,7 +965,12 @@ function renderHistory() {
   if (day) html += '</div>';
   $('#view').innerHTML = html;
   $('#q').addEventListener('input', e => { S.q = e.target.value; const p = e.target.selectionStart; renderHistory(); const n = $('#q'); n.focus(); n.setSelectionRange(p, p); });
-  document.querySelectorAll('[data-id]').forEach(r => r.addEventListener('click', () => { const o = S.ops.find(x => x.id === r.dataset.id); S.edit = o.id; S.draft = { ...o }; setTab('add'); }));
+  $('#hfBox').addEventListener('toggle', e => { S.hfOpen = e.target.open; });
+  document.querySelectorAll('[data-hper]').forEach(b => b.onclick = () => { f.per = b.dataset.hper; if (f.per === 'range' && !f.from) { f.from = S.month + '-01'; f.to = today(); } render(); });
+  document.querySelectorAll('[data-hf]').forEach(el => el.onchange = () => { f[el.dataset.hf] = el.value; renderHistory(); });
+  if ($('#hfFrom')) { $('#hfFrom').onchange = e => { f.from = e.target.value; renderHistory(); }; $('#hfTo').onchange = e => { f.to = e.target.value; renderHistory(); }; }
+  if ($('#hfReset')) $('#hfReset').onclick = () => { S.hf = null; render(); };
+  document.querySelectorAll('[data-id]').forEach(r => r.addEventListener('click', () => { const o = S.ops.find(x => x.id === r.dataset.id); S.edit = o.id; S.draft = { ...o }; S.autoHint = ''; setTab('add'); }));
 }
 
 // ---------- Новая операция / правка ----------
@@ -966,10 +992,14 @@ function renderAdd() {
     <div class="muted" id="fxRate" style="margin-top:4px"></div>` : '';
   $('#view').innerHTML = `
   <h2>${S.edit ? 'Правка операции' : 'Новая операция'}</h2>
+  ${S.edit ? '' : quickRow()}
   <div class="seg">${TYPES.slice(0, 4).map(x => `<button class="chip ${x.t === d.type ? 'on' : ''}" data-type="${x.t}">${x.t === 'Перевод между счетами' ? 'Перевод' : x.t}</button>`).join('')}
     <select class="chip" id="moreType" style="padding:6px 10px"><option value="">Ещё…</option>${TYPES.slice(4).map(x => `<option ${x.t === d.type ? 'selected' : ''}>${x.t}</option>`).join('')}</select></div>
   <div class="muted" style="margin-top:6px">${esc(T.hint)}</div>
   <input class="amount" id="amount" inputmode="decimal" placeholder="0 ${esc(isMetal(cFrom) ? 'г' : symFrom)}" value="${d.amount}">
+  <label class="f">Где или что <span class="muted">(необязательно — по нему приложение само подберёт категорию)</span></label>
+  <input class="in" id="comment" list="cmtList" autocomplete="off" value="${esc(d.comment)}" placeholder="Магнум, кофе, такси…"><datalist id="cmtList">${commentList().map(c => `<option value="${esc(c)}">`).join('')}</datalist>
+  ${S.autoHint ? `<div class="muted" style="margin-top:4px">✨ ${esc(S.autoHint)}</div>` : ''}
   ${cats.length ? `<label class="f">Категория</label><div class="tiles">${cats.map(c => `<div class="tile ${c === d.cat ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</div>`).join('')}</div>` : ''}
   ${subs.length ? `<label class="f">Подкатегория</label><div class="seg">${subs.map(s => `<button class="chip ${s === d.sub ? 'on' : ''}" data-sub="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
   ${T.person ? `<label class="f">Человек</label><div class="seg">${S.cfg.people.map(p => `<button class="chip ${p.name === d.person ? 'on' : ''}" data-person="${esc(p.name)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
@@ -979,15 +1009,20 @@ function renderAdd() {
     <div><label class="f">Дата</label><input class="in" type="date" id="date" value="${d.date}"></div></div>
   ${T.to ? `<label class="f">На счёт</label><select class="in" id="to"><option value="">—</option>${S.cfg.accounts.filter(a => !a.closed || a.name === d.to).map(a => `<option value="${esc(a.name)}" ${a.name === d.to ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('')}</select>` : ''}
   ${fxRow}${rateRow}
-  <label class="f">Комментарий</label><input class="in" id="comment" value="${esc(d.comment)}" placeholder="необязательно">
+  ${S.edit ? '' : `<label class="f" style="font-size:13px;color:var(--ink)"><input type="checkbox" id="favAdd" ${d.fav ? 'checked' : ''}> ⭐ Добавить в избранное — потом вводится в одно касание</label>`}
   <div class="err" id="err"></div>
   <button class="btn" id="save">${S.edit ? 'Сохранить изменения' : 'Сохранить'}</button>
-  ${S.edit ? '<button class="btn danger" id="del">Удалить операцию</button>' : ''}
+  ${S.edit ? '<button class="btn light" id="repeat">↺ Повторить сегодня (новая операция)</button><button class="btn danger" id="del">Удалить операцию</button>' : ''}
   <button class="btn light" id="cancel">Отмена</button>`;
   const sync = () => { d.amount = $('#amount').value; d.account = $('#account').value; d.date = $('#date').value; d.comment = $('#comment').value; if ($('#to')) d.to = $('#to').value; if ($('#amountTo')) d.amountTo = $('#amountTo').value; if ($('#rate')) d.rate = $('#rate').value; };
   // Смена счёта меняет валюту → перерисовать (значок, курс, поле «получила»)
   $('#account').onchange = () => { sync(); d.rate = ''; renderAdd(); };
   if ($('#to')) $('#to').onchange = () => { sync(); renderAdd(); };
+  $('#comment').onchange = () => { sync(); const h = autoFill(d); if (h) { S.autoHint = h; renderAdd(); } };
+  if ($('#favAdd')) $('#favAdd').onchange = e => { d.fav = e.target.checked; };
+  document.querySelectorAll('[data-qfav]').forEach(b => b.onclick = () => { const f = (S.cfg.favs || []).find(x => x.id === b.dataset.qfav); if (!f) return; S.draft = fillFrom(f, true); S.autoHint = ''; renderAdd(); });
+  document.querySelectorAll('[data-qrec]').forEach(b => b.onclick = () => { const o = S.ops.find(x => x.id === b.dataset.qrec); if (!o) return; S.draft = fillFrom(o, true); S.autoHint = ''; renderAdd(); });
+  if ($('#repeat')) $('#repeat').onclick = () => { sync(); S.draft = fillFrom(d, true); S.edit = null; S.autoHint = ''; toast('Новая операция на сегодня — проверь и сохрани'); renderAdd(); };
   const showFx = () => { const el = $('#fxRate'); if (!el) return; const a = num($('#amount').value), b2 = num($('#amountTo').value);
     if (a > 0 && b2 > 0 && cTo) { const c1 = isMetal(cFrom) ? 'г' : symFrom, c2 = isMetal(cTo) ? 'г' : (CUR[cTo] || {}).sym; const rr = x => (+x.toFixed(x < 10 ? 4 : 2)).toLocaleString('ru-RU'); el.textContent = b2 >= a ? `Курс: 1 ${c1} = ${rr(b2 / a)} ${c2}` : `Курс: 1 ${c2} = ${rr(a / b2)} ${c1}`; } else el.textContent = ''; };
   if ($('#amountTo')) { $('#amountTo').oninput = showFx; $('#amount').oninput = showFx; showFx(); }
@@ -998,11 +1033,12 @@ function renderAdd() {
   document.querySelectorAll('[data-person]').forEach(b => b.onclick = () => { sync(); d.person = b.dataset.person; renderAdd(); });
   document.querySelectorAll('[data-debtlink]').forEach(b => b.onclick = () => { sync(); d.debtId = b.dataset.debtlink; const x = debts().find(y => y.id === d.debtId); if (x && x.person) d.person = x.person; renderAdd(); });
   document.querySelectorAll('[data-paylink]').forEach(b => b.onclick = () => { sync(); d.payId = b.dataset.paylink; renderAdd(); });
-  $('#cancel').onclick = () => { const back = S.edit ? 'history' : 'overview'; S.draft = null; S.edit = null; setTab(back); };
+  $('#cancel').onclick = () => { const back = S.edit ? 'history' : 'overview'; S.draft = null; S.edit = null; S.autoHint = ''; setTab(back); };
   $('#save').onclick = async () => {
     sync();
     const T2 = TYPE[d.type];
-    const op = { ...d, amount: num(d.amount) };
+    const op = { ...d, amount: num(d.amount) }; const wantFav = !S.edit && d.fav; delete op.fav;
+    op.comment = (op.comment || '').trim();
     if (!T2.grp) { op.cat = ''; op.sub = ''; } if (!T2.person) op.person = ''; if (!T2.to) op.to = '';
     op.amountTo = T2.fx ? num(d.amountTo) : 0;
     // Курс к основной валюте запоминаем в операции (траты/доходы в чужой валюте не «плывут» при смене курса)
@@ -1021,6 +1057,9 @@ function renderAdd() {
     if (S.edit) { Object.assign(op, { id: S.edit, updatedAt: now, device: DEVICE }); const i = S.ops.findIndex(x => x.id === S.edit); op.createdAt = S.ops[i].createdAt; S.ops[i] = op; }
     else { Object.assign(op, { id: uid(), createdAt: now, updatedAt: now, device: DEVICE, deleted: false }); S.ops.push(op); }
     await DB.put(op);
+    if (wantFav) { const f = { id: uid().slice(0, 8), type: op.type, cat: op.cat, sub: op.sub, person: op.person, account: op.account, to: op.to, comment: op.comment, amount: op.amount };
+      if (!(S.cfg.favs || []).some(x => quickKey(x) === quickKey(f))) { S.cfg.favs = [...(S.cfg.favs || []), f]; await saveCfg(); } }
+    S.autoHint = '';
     lastAcc.set(op.account); Sync.soon();
     S.month = mkey(op.date);
     toast(afterSaveText(op));
@@ -1035,6 +1074,42 @@ function renderAdd() {
     toast('Операция удалена'); S.draft = null; S.edit = null; setTab('history');
   };
   if (!S.edit) setTimeout(() => $('#amount').focus(), 50);
+}
+// ---------- Быстрый ввод: избранное, недавние, категория по «где/что» ----------
+const quickKey = o => [o.type, o.cat || '', o.sub || '', o.person || '', (o.comment || '').trim().toLowerCase()].join('|');
+const qLabel = o => (o.comment && o.comment.trim()) || o.sub || o.person || o.type;
+function quickRow() {
+  const favs = S.cfg.favs || [], fk = new Set(favs.map(quickKey)), seen = new Set(), rec = [];
+  for (const o of live().filter(o => !isPocketOp(o) && ['Расход', 'Доход', 'Помощь'].includes(o.type) && !validate(o)).sort((a, b) => b.createdAt - a.createdAt)) {
+    const k = quickKey(o); if (fk.has(k) || seen.has(k)) continue; seen.add(k); rec.push(o); if (rec.length >= 4) break;
+  }
+  if (!favs.length && !rec.length) return '';
+  return `<div class="quick">${favs.map(f => `<button class="chip" data-qfav="${f.id}">⭐ ${esc(qLabel(f))}${f.amount ? ' · ' + fmt(f.amount, curOf(f.account)) : ''}</button>`).join('')}${rec.map(o => `<button class="chip" data-qrec="${o.id}">↺ ${esc(qLabel(o))} · ${fmt(o.amount, curOf(o.account))}</button>`).join('')}</div>
+  <div class="muted" style="margin:2px 0 8px">⭐ избранное · ↺ недавние — нажми, форма заполнится сама</div>`;
+}
+function fillFrom(src, withAmount) {
+  const d = newDraft();
+  for (const k of ['type', 'cat', 'sub', 'person', 'comment', 'to']) if (src[k]) d[k] = src[k];
+  if (src.account && openAccs().some(a => a.name === src.account)) d.account = src.account;
+  if (withAmount && src.amount) d.amount = String(src.amount);
+  return d;
+}
+// Подсказки для поля «Где или что»: свои прошлые записи, сначала недавние
+function commentList() {
+  const seen = new Set(), out = [];
+  for (const o of live().filter(o => o.comment && !isPocketOp(o)).sort((a, b) => b.createdAt - a.createdAt)) { const k = o.comment.trim().toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(o.comment.trim()); } if (out.length >= 60) break; }
+  return out;
+}
+// Категорию (и человека) подставляем из последней операции того же типа с тем же «где/что»
+function autoFill(d) {
+  const key = (d.comment || '').trim().toLowerCase(); if (!key) return '';
+  const T = TYPE[d.type];
+  const prev = live().filter(o => !isPocketOp(o) && o.type === d.type && (o.comment || '').trim().toLowerCase() === key && !validate(o)).sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (!prev) return '';
+  const parts = [];
+  if (T.grp && !d.cat && prev.cat) { d.cat = prev.cat; d.sub = prev.sub; parts.push(prev.cat + ' · ' + prev.sub); }
+  if (T.person && !d.person && prev.person) { d.person = prev.person; parts.push(prev.person); }
+  return parts.length ? `Подобрала по «${d.comment.trim()}»: ${parts.join(', ')}` : '';
 }
 // «Это оплата: …» — если у операции подходящие регулярные платежи
 function payLinkRow(d) {
@@ -1406,12 +1481,18 @@ function renderMore() {
     <select class="in" data-person-i="${i}" data-k="role">${roleOptions(p.role)}</select>
     <button class="btn small light" data-delperson="${i}" style="margin:0" aria-label="Удалить">✕</button></div>`).join('')}
     <div class="grid2" style="margin:8px 0"><input class="in" id="newPerson" placeholder="Имя"><button class="btn small" id="addPerson">+ Человек</button></div></div>
+  <h2>⭐ Избранные операции</h2>
+  <div class="card">${(S.cfg.favs || []).length ? S.cfg.favs.map((f, i) => `<div class="row"><span style="min-width:0">${esc(qLabel(f))} <span class="sub">· ${esc(f.type)}${f.cat ? ' · ' + esc(f.cat) : ''}${f.amount ? ' · ' + fmt(f.amount, curOf(f.account)) : ''}</span></span><button class="btn small light" data-delfav="${i}" style="margin:0">✕</button></div>`).join('') : '<div class="row muted">Пока пусто. При вводе операции отметь «⭐ Добавить в избранное».</div>'}</div>
+  <h2>🔒 Защита входа</h2>
+  <div class="card" style="padding:12px"><div class="muted">PIN-код спрашивается при открытии приложения и после минуты в фоне. Хранится только на этом устройстве — на телефоне и ноутбуке ставится отдельно. Это замок экрана, а не шифрование данных.</div>
+    ${Lock.has() ? '<div class="ok" style="margin-top:8px">🔒 PIN-код включён на этом устройстве</div><button class="btn small" id="pinChange">Сменить PIN</button><button class="btn small light" id="pinOff">Убрать PIN</button>' : '<button class="btn small" id="pinSet">Поставить PIN-код</button>'}</div>
   <h2>Данные</h2>
   <div class="card" style="padding:12px">
     <div class="muted">Операций: ${live().length}. Хранятся на этом устройстве${Sync.enabled() ? ' и в твоём Google Диске (скрытая папка приложения — её видит только «Жизнь»)' : ''}.</div>
     <div style="margin-top:6px;font-size:13px">${syncInfo()}</div>
     <button class="btn small" id="syncNow">${Sync.enabled() ? '☁ Синхронизировать сейчас' : '☁ Подключить Google Диск'}</button>
     ${Sync.enabled() ? '<button class="btn small light" id="syncOff">Отключить на этом устройстве</button>' : ''}
+    <button class="btn small" id="openReport">📄 Отчёт за месяц (PDF / Excel)</button>
     <button class="btn small" id="exportCsv">Выгрузить операции (Excel / CSV)</button>
     <button class="btn small light" id="backup">Резервная копия (файл)</button>
     <label class="btn small light" style="cursor:pointer">Восстановить из копии<input type="file" id="restore" accept=".json" hidden></label>
@@ -1548,6 +1629,11 @@ function renderMore() {
   $('#syncNow').onclick = () => Sync.run(true).then(n => { toast(n ? `Синхронизировано: подтянуто изменений — ${n}` : 'Синхронизировано ✓'); renderMore(); }).catch(e => { toast('⚠ ' + e.message); renderMore(); });
   if ($('#syncOff')) $('#syncOff').onclick = () => { if (!confirm('Отключить синхронизацию на этом устройстве? Данные останутся и здесь, и в Google Диске.')) return; Sync.off(); renderMore(); };
   $('#exportCsv').onclick = exportCsv;
+  $('#openReport').onclick = () => setTab('report');
+  document.querySelectorAll('[data-delfav]').forEach(b => b.onclick = async () => { const f = S.cfg.favs[+b.dataset.delfav]; if (!confirm(`Убрать «${qLabel(f)}» из избранного?`)) return; S.cfg.favs.splice(+b.dataset.delfav, 1); await saveCfg(); renderMore(); });
+  if ($('#pinSet')) $('#pinSet').onclick = () => Lock.setup().then(renderMore);
+  if ($('#pinChange')) $('#pinChange').onclick = async () => { if (await Lock.askCurrent()) Lock.setup().then(renderMore); };
+  if ($('#pinOff')) $('#pinOff').onclick = async () => { if (await Lock.askCurrent()) { Lock.clear(); toast('PIN-код убран'); renderMore(); } };
   $('#backup').onclick = () => download(`жизнь-копия-${today()}.json`, JSON.stringify({ app: 'zhizn', v: 1, at: new Date().toISOString(), cfg: S.cfg, ops: S.ops }, null, 1), 'application/json');
   $('#restore').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
@@ -1675,6 +1761,75 @@ function syncInfo() {
   return `☁ Google Диск подключён · последняя синхронизация: ${last}` + (st.err ? `<div class="err">⚠ ${esc(st.err)}</div>` : '');
 }
 
+// ---------- PIN-код на вход (только это устройство) ----------
+// Это замок экрана, а не шифрование: в localStorage хранится соль и SHA-256 от PIN, сам PIN нигде не хранится.
+const Lock = {
+  key: 'zhizn-pin', hiddenAt: 0, open: false,
+  get() { try { return JSON.parse(localStorage.getItem(this.key) || 'null'); } catch (e) { return null; } },
+  has() { return !!this.get(); },
+  async hash(pin, salt) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + pin)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''); },
+  async set(pin) { const salt = uid(); localStorage.setItem(this.key, JSON.stringify({ salt, len: pin.length, hash: await this.hash(pin, salt) })); },
+  clear() { try { localStorage.removeItem(this.key); } catch (e) {} },
+  async check(pin) { const st = this.get(); return !!st && (await this.hash(pin, st.salt)) === st.hash; },
+  // Окно ввода PIN (цифровая клавиатура). Возвращает введённый PIN или null (отмена).
+  pad(title, len, cancel, forgot) {
+    return new Promise(res => {
+      const el = document.createElement('div'); el.className = 'lock'; let v = '';
+      const draw = msg => {
+        el.innerHTML = `<div class="lock-box"><div style="font-size:34px">🔒</div><b style="font-size:17px">${esc(title)}</b>
+          <div class="pin-dots">${Array.from({ length: len || Math.max(4, v.length) }, (_, i) => `<i class="${i < v.length ? 'on' : ''}"></i>`).join('')}</div>
+          <div class="err" style="min-height:18px;margin:0">${msg || ''}</div>
+          <div class="keys">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 'ok', 0, '⌫'].map(k => k === 'ok' ? (len ? '<span></span>' : `<button data-pk="ok" class="kok">✓</button>`) : `<button data-pk="${k}">${k}</button>`).join('')}</div>
+          ${cancel ? '<button class="ghost" data-pk="cancel" style="font-size:14px;margin-top:6px">Отмена</button>' : ''}
+          ${forgot ? '<button class="ghost" data-pk="forgot" style="font-size:13px;margin-top:6px">Забыла PIN</button>' : ''}</div>`;
+        el.querySelectorAll('[data-pk]').forEach(b => b.onclick = () => press(b.dataset.pk));
+      };
+      const done = val => { document.removeEventListener('keydown', kd); el.remove(); res(val); };
+      const press = k => {
+        if (k === 'cancel') return done(null);
+        if (k === 'forgot') return done('__forgot');
+        if (k === '⌫') v = v.slice(0, -1);
+        else if (k === 'ok') { if (v.length >= 4) return done(v); }
+        else if (v.length < 6) v += k;
+        draw(); if (len && v.length === len) setTimeout(() => done(v), 120);
+      };
+      const kd = e => { if (/^\d$/.test(e.key)) press(e.key); else if (e.key === 'Backspace') press('⌫'); else if (e.key === 'Enter') press('ok'); else if (e.key === 'Escape' && cancel) press('cancel'); };
+      document.addEventListener('keydown', kd);
+      el.redraw = draw; draw(); document.body.appendChild(el); res.el = el;
+    });
+  },
+  // Замок при входе: пока PIN не верный — дальше не пускает
+  async show() {
+    if (this.open || !this.has()) return; this.open = true;
+    let tries = 0;
+    for (;;) {
+      const pin = await this.pad('Введи PIN-код', this.get().len, false, true);
+      if (pin === '__forgot') { if (await this.forgot()) return; continue; }
+      if (await this.check(pin)) { this.open = false; return; }
+      tries++; toast(tries >= 5 ? '⚠ Неверный PIN. Подожди 30 секунд' : '⚠ Неверный PIN');
+      if (tries >= 5) { await new Promise(r => setTimeout(r, 30000)); tries = 0; }
+    }
+  },
+  async forgot() {
+    const synced = Sync.enabled();
+    if (!confirm(`Сбросить PIN? Для этого данные на ЭТОМ устройстве будут удалены.\n\n${synced ? 'Синхронизация с Google Диском включена — после входа в Google данные вернутся.' : '⚠ Синхронизация с Google Диском не включена — без резервной копии данные пропадут навсегда.'}`)) return false;
+    if (!synced && !confirm('Точно удалить все данные на этом устройстве? Это нельзя отменить.')) return false;
+    this.clear(); try { DB.db && DB.db.close(); } catch (e) {}
+    await new Promise(r => { const q = indexedDB.deleteDatabase('zhizn'); q.onsuccess = q.onerror = q.onblocked = r; });
+    location.reload(); return true;
+  },
+  async askCurrent() {
+    const pin = await this.pad('Текущий PIN', this.get().len, true, false); if (pin === null) return false;
+    if (await this.check(pin)) return true; toast('⚠ Неверный PIN'); return false;
+  },
+  async setup() {
+    const p1 = await this.pad('Новый PIN: 4–6 цифр, потом ✓', 0, true, false); if (p1 === null) return;
+    const p2 = await this.pad('Повтори PIN', p1.length, true, false); if (p2 === null) return;
+    if (p1 !== p2) { toast('⚠ PIN-коды не совпали — попробуй ещё раз'); return; }
+    await this.set(p1); toast('🔒 PIN-код включён на этом устройстве');
+  },
+};
+
 // ---------- Запуск ----------
 (async function init() {
   try {
@@ -1685,6 +1840,7 @@ function syncInfo() {
   } catch (e) {
     $('#view').innerHTML = '<div class="warn">Не удалось открыть хранилище на устройстве. Проверь, что браузер не в режиме инкогнито.</div>'; return;
   }
+  if (Lock.has()) await Lock.show();
   await Rates.load();
   if ((Rates.used().length || !Rates.data) && Rates.stale() && navigator.onLine !== false) Rates.refresh().then(() => { if (S.tab !== 'add') render(); }).catch(() => {});
   const t = today(); S.month = t < S.cfg.startDate ? mkey(S.cfg.startDate) : mkey(t);
@@ -1695,6 +1851,10 @@ function syncInfo() {
   Sync.mark(Sync.enabled() ? 'wait' : 'off');
   $('#syncDot').onclick = () => Sync.run(true).then(n => toast(n ? `Синхронизировано: подтянуто изменений — ${n}` : 'Синхронизировано ✓')).catch(e => toast('⚠ ' + e.message));
   if (Sync.enabled()) Sync.run(false).catch(() => {});
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Sync.enabled()) Sync.run(false).catch(() => {}); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { Lock.hiddenAt = Date.now(); return; }
+    if (Lock.has() && Lock.hiddenAt && Date.now() - Lock.hiddenAt > 60000) Lock.show();
+    if (Sync.enabled()) Sync.run(false).catch(() => {});
+  });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
