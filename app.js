@@ -740,8 +740,8 @@ function setTab(t) { S.tab = t; document.querySelectorAll('.tabs button').forEac
 function render() {
   const im = $('#intModal'); if (im) im.remove();
   $('#mLabel').textContent = mlabel(S.month);
-  $('#monthBar').style.visibility = (S.tab === 'add' || S.tab === 'more') ? 'hidden' : 'visible';
-  ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore })[S.tab]();
+  $('#monthBar').style.visibility = (S.tab === 'add' || S.tab === 'more' || (S.tab === 'analytics' && anState().p !== 'm')) ? 'hidden' : 'visible';
+  ({ overview: renderOverview, history: renderHistory, add: renderAdd, budget: renderBudget, more: renderMore, analytics: renderAnalytics })[S.tab]();
 }
 
 // ---------- Обзор ----------
@@ -805,11 +805,13 @@ function renderOverview() {
   <h2>Внимание</h2>${warns.map(([c, t, go]) => go ? `<div class="${c} go" role="button" tabindex="0" data-go="${esc(go)}">${esc(t)}<span class="goarr">›</span></div>` : `<div class="${c}">${esc(t)}</div>`).join('')}
   <h2>Бюджет по категориям</h2>
   <div class="card">${topCats.length ? topCats.map(catBar).join('') : '<div class="row muted">Пока нет плана и расходов</div>'}</div>
+  ${overviewCharts(m)}
   <h2>Счета</h2>
   <div class="card">${S.cfg.accounts.filter(a => !a.closed || r2(b[a.name])).map(a => accRow(a, b[a.name])).join('')}</div>
   ${S.cfg.accounts.some(a => accCur(a) !== baseCur()) ? `<p class="muted">Счета в другой валюте и металлы пересчитаны в ${CUR[baseCur()].sym} по текущему курсу${Rates.data ? ' (' + esc(Rates.data.src) + ', ' + esc(Rates.data.date) + ')' : ''}.</p>` : ''}
   ${people.length ? `<h2>Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => goTo(el.dataset.go));
+  bindOverviewCharts();
   bindMaturity();
   interestModal();
 }
