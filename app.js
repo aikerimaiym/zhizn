@@ -432,7 +432,7 @@ function interestPayments() {
     freq: 'month', day: +a.payDay || 1, start: S.cfg.startDate, end: a.autoRenew ? '' : depEnd(a), active: true,
   }));
 }
-const allPayments = () => [...payments(), ...interestPayments()];
+const allPayments = () => [...payments(), ...interestPayments(), ...debtPayments()];
 
 // ---------- Регулярные платежи и поступления ----------
 // cfg.payments: [{ id, name, kind:'out'|'in', amount, account, cat, sub, person, freq:'month'|'months'|'year'|'week', n, day, start, end, active }]
@@ -474,6 +474,7 @@ function payMatches(p, due) {
   const shared = allPayments().filter(q => q.active !== false && q.kind === p.kind && q.cat === p.cat && q.sub === p.sub && (q.person || '') === (p.person || '')).length > 1;
   return live().filter(o => {
     if (isPocketOp(o) || validate(o) || o.date < a || o.date > b) return false;
+    if (p.debtId) { const dd = debts().find(x => x.id === p.debtId); return o.payId === p.id || (o.type === 'Я вернула долг' && !!dd && debtOpMatch(dd, o)); }
     if (o.payId) return o.payId === p.id;
     if (shared) return false;                                   // одинаковая категория у нескольких платежей — нужна явная отметка
     if (p.kind === 'out') return o.type === 'Расход' && o.cat === p.cat && o.sub === p.sub;
@@ -506,6 +507,169 @@ function payForecast() {
   const next = ins[0];
   const need = next ? sumTo(outs, next.due) : sumTo(outs, dAdd(t, 30));
   return { cash: r2(cash), out7: sumTo(outs, dAdd(t, 7)), out30: sumTo(outs, dAdd(t, 30)), in30: sumTo(ins, dAdd(t, 30)), next, need, enough: cash >= need, overdue: outs.filter(r => r.due < t) };
+}
+
+// ---------- Долги, имущество, чистый капитал ----------
+// cfg.debts: [{ id, name, kind:'installment'|'credit'|'loan'|'lent', person, balance (остаток на дату), balanceDate, balanceSetAt (время ввода),
+//               rate (% годовых), monthly (платёж в месяц), day (день платежа), account (с какого счёта платить), archived }]
+// Остаток = введённый остаток − платежи после ввода («Я вернула долг» / «Мне вернули долг») + новые займы («Заём получен» / «Заём выдан»).
+// cfg.assets: [{ id, name, kind, value }] — имущество по оценке.
+const DEBT_KINDS = { installment: '🧾 Рассрочка', credit: '🏦 Кредит', loan: '🤝 Заём у человека', lent: '💸 Я дала в долг' };
+const ASSET_KINDS = ['Недвижимость', 'Автомобиль', 'Техника', 'Украшения', 'Другое'];
+const debts = () => (S.cfg.debts || []).filter(d => !d.archived);
+const assets = () => S.cfg.assets || [];
+const isLent = d => d.kind === 'lent';
+// Операция относится к долгу: явная связь (debtId) или тот же человек, если долг у него один
+function debtOpMatch(d, o) {
+  if (o.debtId) return o.debtId === d.id;
+  if (!d.person || o.person !== d.person) return false;
+  return debts().filter(x => x.person === d.person && isLent(x) === isLent(d)).length === 1;
+}
+function debtBalance(d, upto) {
+  let b = +d.balance || 0;
+  for (const o of live()) {
+    if (isPocketOp(o) || validate(o) || !debtOpMatch(d, o)) continue;
+    if (o.date < (d.balanceDate || '0000') || (o.createdAt || 0) <= (d.balanceSetAt || 0)) continue;
+    if (upto && o.date > upto) continue;
+    const v = opBase(o);
+    if (!isLent(d)) { if (o.type === 'Я вернула долг') b -= v; else if (o.type === 'Заём получен') b += v; }
+    else { if (o.type === 'Мне вернули долг') b -= v; else if (o.type === 'Заём выдан') b += v; }
+  }
+  return r2(Math.max(0, b));
+}
+function debtInfo(d) {
+  const rest = debtBalance(d), m = +d.monthly || 0;
+  const months = m > 0 ? Math.ceil(rest / m) : 0;
+  const t = today(), firstDue = d.day ? (() => { const x = dParse(t); const dim = new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate(); const cand = dIso(new Date(x.getFullYear(), x.getMonth(), Math.min(+d.day, dim))); return cand >= t ? cand : addMonthsIso(cand, 1); })() : t;
+  const endDate = months > 0 ? addMonthsIso(firstDue, months - 1) : '';
+  const interestM = +d.rate > 0 ? r2(rest * d.rate / 1200) : 0;
+  return { d, rest, months, endDate, interestM, done: rest <= 0 };
+}
+// Платежи по долгам — авто-строки в календаре «Платежи»
+function debtPayments() {
+  return debts().filter(d => !isLent(d) && +d.monthly > 0 && +d.day > 0).map(d => {
+    const i = debtInfo(d); if (i.done) return null;
+    return { id: 'debt:' + d.id, name: 'Платёж: ' + d.name, kind: 'out', auto: true, debtId: d.id, amount: r2(Math.min(+d.monthly, i.rest)), account: d.account || '', cat: '', sub: '', person: d.person || '',
+      freq: 'month', day: +d.day, start: d.balanceDate || S.cfg.startDate, end: i.endDate, active: true };
+  }).filter(Boolean);
+}
+// Чистый капитал = деньги на счетах (вкл. депозиты и металлы) + имущество + что мне должны − мои долги
+function capital(upto) {
+  const t = totals(upto ? balances(mkey(upto)) : balances());
+  const prop = r2(assets().reduce((s, a) => s + (+a.value || 0), 0));
+  let owe = 0, owed = 0;
+  for (const d of debts()) { const b = debtBalance(d, upto); if (isLent(d)) owed += b; else owe += b; }
+  return { money: r2(t.total), prop, owed: r2(owed), owe: r2(owe), net: r2(t.total + prop + owed - owe) };
+}
+// Капитал на конец последних месяцев (имущество — по текущей оценке)
+function capitalHistory(n) {
+  const out = [], cur = mkey(today());
+  for (let k = n - 1; k >= 0; k--) {
+    const M = mshift(cur, -k); if (M < mkey(S.cfg.startDate)) continue;
+    const end = k === 0 ? today() : dIso(new Date(+M.slice(0, 4), +M.slice(5, 7), 0));
+    out.push({ M, ...capital(end) });
+  }
+  return out;
+}
+function renderCapital() {
+  const c = capital(), hist = capitalHistory(6), maxNet = Math.max(1, ...hist.map(h => Math.abs(h.net)));
+  const dl = debts().map(debtInfo), mine = dl.filter(i => !isLent(i.d)), lent = dl.filter(i => isLent(i.d));
+  const ed = S.debtEdit ? (S.cfg.debts || []).find(d => d.id === S.debtEdit) : null;
+  const ae = S.assetEdit ? assets().find(a => a.id === S.assetEdit) : null;
+  const accOpts = sel => openAccs().map(a => `<option value="${esc(a.name)}" ${a.name === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  const kind = (ed && ed.kind) || S.debtKind || 'installment';
+  $('#view').innerHTML = budgetSeg() + `
+  <div class="cards">
+    <div class="kpi ${c.net < 0 ? 'powder' : 'green'}"><div class="l">Чистый капитал</div><div class="v ${c.net < 0 ? 'neg' : ''}">${money(c.net)}</div><div class="s">всё моё − мои долги</div></div>
+    <div class="kpi blue"><div class="l">Деньги</div><div class="v">${money(c.money)}</div><div class="s">все счета, депозиты, металлы</div></div>
+    <div class="kpi lilac"><div class="l">Имущество + мне должны</div><div class="v">${money(c.prop + c.owed)}</div><div class="s">${money(c.prop)} + ${money(c.owed)}</div></div>
+    <div class="kpi powder"><div class="l">Мои долги</div><div class="v ${c.owe ? 'neg' : ''}">${money(c.owe)}</div><div class="s">рассрочки, кредиты, займы</div></div>
+  </div>
+  ${hist.length > 1 ? `<h2>Как менялся капитал</h2><div class="card">${hist.map(h => `<div class="row" style="display:block"><div style="display:flex;justify-content:space-between"><span>${mlabel(h.M)}</span><b class="${h.net < 0 ? 'neg' : ''}">${money(h.net)}</b></div><div class="bar"><i style="width:${Math.max(2, Math.abs(h.net) / maxNet * 100)}%;${h.net < 0 ? 'background:var(--red)' : ''}"></i></div></div>`).join('')}
+    <div class="sub" style="padding:6px 0">Имущество — по текущей оценке.${hist.length >= 2 ? ` За период: ${(hist[hist.length - 1].net - hist[0].net >= 0 ? '+' : '−') + money(Math.abs(hist[hist.length - 1].net - hist[0].net))}` : ''}</div></div>` : ''}
+  <h2>Мои долги</h2>
+  ${mine.length ? mine.map(debtCard).join('') : '<div class="card"><div class="row muted">Долгов нет 🎉 Если есть рассрочка или кредит — добавь ниже.</div></div>'}
+  ${lent.length ? `<h2>Мне должны</h2>${lent.map(debtCard).join('')}` : ''}
+  <h2>${ed ? 'Правка долга' : 'Добавить долг'}</h2>
+  <div class="card" style="padding:10px 12px">
+    <div class="seg">${Object.entries(DEBT_KINDS).map(([k, l]) => `<button class="chip ${k === kind ? 'on' : ''}" data-dkind="${k}">${l}</button>`).join('')}</div>
+    <label class="f">Название</label><input class="in" id="dName" value="${esc(ed ? ed.name : '')}" placeholder="${kind === 'installment' ? 'Например: Рассрочка на телефон' : kind === 'credit' ? 'Например: Кредит на машину' : kind === 'lent' ? 'Например: Айгерим до зарплаты' : 'Например: Заём у брата'}">
+    <label class="f">${kind === 'lent' ? 'Кто должен' : 'Кому плачу (банк или человек)'}</label><select class="in" id="dPerson"><option value="">—</option>${S.cfg.people.map(p => `<option ${ed && p.name === ed.person ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+    <div class="muted">Нет в списке? Добавь в «Ещё → Люди» (например, «Kaspi рассрочка» уже есть).</div>
+    <div class="grid2"><div><label class="f">${kind === 'lent' ? 'Сколько должны сейчас' : 'Остаток долга сейчас'}</label><input class="in" id="dBal" inputmode="decimal" value="${ed ? debtBalance(ed) : ''}"></div>
+      <div><label class="f">На дату</label><input class="in" type="date" id="dDate" value="${today()}"></div></div>
+    ${kind === 'lent' ? '' : `<div class="grid2"><div><label class="f">Платёж в месяц</label><input class="in" id="dMonthly" inputmode="decimal" value="${ed ? ed.monthly || '' : ''}"></div>
+      <div><label class="f">День платежа</label><input class="in" id="dDay" inputmode="numeric" value="${ed ? ed.day || '' : ''}" placeholder="1–31"></div></div>
+    <div class="grid2"><div><label class="f">Ставка, % годовых</label><input class="in" id="dRate" inputmode="decimal" value="${ed ? ed.rate || '' : ''}" placeholder="${kind === 'installment' ? '0 — рассрочка' : 'из договора'}"></div>
+      <div><label class="f">Платить со счёта</label><select class="in" id="dAcc">${accOpts(ed ? ed.account : (openAccs()[0] || {}).name)}</select></div></div>`}
+    <div class="err" id="dErr"></div>
+    <button class="btn" id="dSave">${ed ? 'Сохранить' : '+ Добавить'}</button>
+    ${ed ? '<button class="btn light" id="dCancel">Отмена</button><button class="btn danger" id="dDel">Удалить (в архив)</button>' : ''}
+  </div>
+  <h2>Имущество</h2>
+  <div class="card">${assets().length ? assets().map(a => `<div class="row"><span>${esc(a.name)} <span class="sub">· ${esc(a.kind)}</span></span><span style="white-space:nowrap"><b>${money(a.value)}</b> <button class="btn small light" data-aedit="${a.id}" style="margin:0;padding:4px 8px">✎</button></span></div>`).join('') : '<div class="row muted">Имущества пока нет. Машина, квартира, техника — добавь по оценочной стоимости.</div>'}</div>
+  <div class="card" style="padding:10px 12px"><b>${ae ? 'Правка имущества' : 'Добавить имущество'}</b>
+    <div class="grid2"><div><label class="f">Название</label><input class="in" id="aName" value="${esc(ae ? ae.name : '')}" placeholder="Например: Ноутбук"></div>
+      <div><label class="f">Вид</label><select class="in" id="aKind">${ASSET_KINDS.map(k => `<option ${ae && ae.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div></div>
+    <label class="f">Сколько стоит сейчас (примерно)</label><input class="in" id="aValue" inputmode="decimal" value="${ae ? ae.value : ''}">
+    <button class="btn small" id="aSave">${ae ? 'Сохранить' : '+ Добавить'}</button>${ae ? '<button class="btn small light" id="aCancel">Отмена</button><button class="btn small danger" id="aDel">Удалить</button>' : ''}
+  </div>
+  <details class="card" style="padding:4px 12px"><summary class="muted" style="font-weight:600">Как это работает?</summary><div class="muted" style="padding-bottom:8px">
+    <p style="margin:4px 0"><b>Чистый капитал</b> = все деньги на счетах (вкл. депозиты и золото) + имущество + что тебе должны − твои долги. Это главный показатель того, как растёт твоё финансовое положение.</p>
+    <p style="margin:4px 0"><b>Долг</b>: впиши остаток на сегодня, платёж и день. Платёж сам появится в «Платежах». Когда платишь — «+» → «Ещё…» → «Я вернула долг» (выбери долг) — остаток уменьшится.</p>
+    <p style="margin:4px 0"><b>Кредит с процентами</b>: часть платежа — проценты, поэтому остаток в банке уменьшается медленнее. Раз в месяц сверь остаток в приложении банка и обнови его здесь (✎).</p>
+    <p style="margin:4px 0"><b>Я дала в долг</b>: «Заём выдан» увеличивает, «Мне вернули долг» уменьшает.</p>
+    <p style="margin:4px 0"><b>Имущество</b> — по примерной стоимости, без точности до тенге. Обновляй раз в полгода.</p>
+    <p style="margin:4px 0">Это учёт, а не инвестиционные рекомендации.</p>
+  </div></details>`;
+  bindBudgetSeg();
+  document.querySelectorAll('[data-dkind]').forEach(b => b.onclick = () => { S.debtKind = b.dataset.dkind; if (ed) ed.kind = b.dataset.dkind; renderCapital(); });
+  $('#dSave').onclick = async () => {
+    const name = $('#dName').value.trim(), bal = num($('#dBal').value), date = $('#dDate').value || today();
+    if (!name) return ($('#dErr').textContent = '⚠ Назови долг');
+    if (!(bal >= 0) || $('#dBal').value.trim() === '') return ($('#dErr').textContent = '⚠ Укажи остаток');
+    const rec = { ...(ed || {}), kind, name, person: $('#dPerson').value, balance: bal, balanceDate: date, balanceSetAt: Date.now() };
+    if (kind !== 'lent') Object.assign(rec, { monthly: num($('#dMonthly').value), day: Math.min(31, Math.max(0, Math.round(num($('#dDay').value)))) || null, rate: num($('#dRate').value), account: $('#dAcc').value });
+    const list = (S.cfg.debts || []).slice();
+    if (ed) list[list.findIndex(d => d.id === ed.id)] = rec; else list.push({ ...rec, id: uid().slice(0, 8) });
+    S.cfg.debts = list; S.debtEdit = null; await saveCfg(); toast(ed ? 'Долг обновлён' : 'Долг добавлен'); renderCapital();
+  };
+  if ($('#dCancel')) $('#dCancel').onclick = () => { S.debtEdit = null; renderCapital(); };
+  if ($('#dDel')) $('#dDel').onclick = async () => { if (!confirm('Убрать «' + ed.name + '» в архив? Операции останутся.')) return; S.cfg.debts = S.cfg.debts.map(d => d.id === ed.id ? { ...d, archived: true } : d); S.debtEdit = null; await saveCfg(); renderCapital(); };
+  document.querySelectorAll('[data-dedit]').forEach(b => b.onclick = () => { S.debtEdit = b.dataset.dedit; renderCapital(); setTimeout(() => $('#dName').scrollIntoView({ block: 'center' }), 50); });
+  document.querySelectorAll('[data-dpay]').forEach(b => b.onclick = () => {
+    const d = debts().find(x => x.id === b.dataset.dpay), i = debtInfo(d);
+    S.edit = null; S.draft = { ...newDraft(), type: isLent(d) ? 'Мне вернули долг' : 'Я вернула долг', amount: String(isLent(d) ? i.rest : Math.min(+d.monthly || i.rest, i.rest)), account: d.account || newDraft().account, person: d.person || '', debtId: d.id, payId: isLent(d) ? '' : 'debt:' + d.id };
+    setTab('add');
+  });
+  $('#aSave').onclick = async () => {
+    const name = $('#aName').value.trim(), value = num($('#aValue').value); if (!name || !(value >= 0)) { toast('Укажи название и стоимость'); return; }
+    const list = assets().slice(), rec = { ...(ae || {}), name, kind: $('#aKind').value, value, updated: today() };
+    if (ae) list[list.findIndex(a => a.id === ae.id)] = rec; else list.push({ ...rec, id: uid().slice(0, 8) });
+    S.cfg.assets = list; S.assetEdit = null; await saveCfg(); toast('Имущество сохранено'); renderCapital();
+  };
+  if ($('#aCancel')) $('#aCancel').onclick = () => { S.assetEdit = null; renderCapital(); };
+  if ($('#aDel')) $('#aDel').onclick = async () => { if (!confirm('Удалить «' + ae.name + '»?')) return; S.cfg.assets = assets().filter(a => a.id !== ae.id); S.assetEdit = null; await saveCfg(); renderCapital(); };
+  document.querySelectorAll('[data-aedit]').forEach(b => b.onclick = () => { S.assetEdit = b.dataset.aedit; renderCapital(); setTimeout(() => $('#aName').scrollIntoView({ block: 'center' }), 50); });
+}
+function debtCard(i) {
+  const d = i.d, lent = isLent(d);
+  const info = lent ? `должны мне${d.person ? ' · ' + esc(d.person) : ''}`
+    : [d.person && esc(d.person), +d.monthly ? 'платёж ' + money(d.monthly) + (d.day ? ' · ' + d.day + '-го' : '') : 'платёж не указан', +d.rate ? 'ставка ' + fmtPct(+d.rate) + ' · ≈ ' + money(i.interestM) + '/мес проценты' : (d.kind === 'installment' ? 'без процентов' : ''), i.months ? `осталось ${i.months} мес. · до ${i.endDate.split('-').reverse().join('.')}` : ''].filter(Boolean).join(' · ');
+  const paid = +d.balance > 0 ? Math.min(1, 1 - i.rest / Math.max(+d.balance, i.rest)) : 1;
+  return `<div class="card" style="padding:10px 12px"><div style="display:flex;justify-content:space-between;gap:8px"><b>${DEBT_KINDS[d.kind].split(' ')[0]} ${esc(d.name)}</b><b class="${lent ? 'pos' : 'neg'}">${money(i.rest)}</b></div>
+    <div class="bar"><i style="width:${paid * 100}%;background:var(--greenInk)"></i></div>
+    <div class="sub" style="margin-top:4px">${i.done ? (lent ? '🎉 вернули полностью' : '🎉 погашен') : info}</div>
+    <div>${i.done ? '' : `<button class="btn small" data-dpay="${d.id}">${lent ? 'Мне вернули' : 'Внести платёж'}</button>`}<button class="btn small light" data-dedit="${d.id}">✎</button></div></div>`;
+}
+// Выбор долга в форме операции (для займов и возвратов)
+function debtLinkRow(d) {
+  const lentTypes = ['Заём выдан', 'Мне вернули долг'], mineTypes = ['Заём получен', 'Я вернула долг'];
+  const want = lentTypes.includes(d.type) ? 'lent' : mineTypes.includes(d.type) ? 'mine' : '';
+  if (!want) return '';
+  const fit = debts().filter(x => (want === 'lent') === isLent(x) && (!d.person || !x.person || x.person === d.person));
+  if (!fit.length) return '';
+  return `<label class="f">По какому долгу?</label><div class="seg">${fit.map(x => `<button class="chip ${d.debtId === x.id ? 'on' : ''}" data-debtlink="${x.id}">${esc(x.name)}</button>`).join('')}<button class="chip ${!d.debtId ? 'on' : ''}" data-debtlink="">Другое</button></div>`;
 }
 
 // ---------- Навигация ----------
@@ -567,6 +731,7 @@ function renderOverview() {
     <div class="row"><span>Доходы (свои)</span><b class="pos">${money(inc)}</b></div>
     <div class="row"><span>Помощь</span><b>${money(help)}</b></div>
     <div class="row"><span>Расходы</span><b class="neg">${money(exp)}</b></div>
+    ${debts().length || assets().length ? `<div class="row"><span>Чистый капитал <span class="sub">· Бюджет → Капитал</span></span><b>${money(capital().net)}</b></div>` : ''}
     <div class="row"><span class="sub">к прошлому месяцу</span><span class="sub">${prevExp ? (exp >= prevExp ? '+' : '') + pct(exp / prevExp - 1) + ' расходов' : '–'}</span></div>
   </div>
   <h2>Внимание</h2>${warns.map(([c, t]) => `<div class="${c}">${esc(t)}</div>`).join('')}
@@ -738,6 +903,7 @@ function renderAdd() {
   ${subs.length ? `<label class="f">Подкатегория</label><div class="seg">${subs.map(s => `<button class="chip ${s === d.sub ? 'on' : ''}" data-sub="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
   ${T.person ? `<label class="f">Человек</label><div class="seg">${S.cfg.people.map(p => `<button class="chip ${p.name === d.person ? 'on' : ''}" data-person="${esc(p.name)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
   ${payLinkRow(d)}
+  ${debtLinkRow(d)}
   <div class="grid2"><div><label class="f">${T.to ? 'Со счёта' : 'Счёт'}</label><select class="in" id="account">${accOpts}</select></div>
     <div><label class="f">Дата</label><input class="in" type="date" id="date" value="${d.date}"></div></div>
   ${T.to ? `<label class="f">На счёт</label><select class="in" id="to"><option value="">—</option>${S.cfg.accounts.filter(a => !a.closed || a.name === d.to).map(a => `<option value="${esc(a.name)}" ${a.name === d.to ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('')}</select>` : ''}
@@ -759,6 +925,7 @@ function renderAdd() {
   document.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { sync(); d.cat = b.dataset.cat; d.sub = ''; renderAdd(); });
   document.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { sync(); d.sub = b.dataset.sub; renderAdd(); });
   document.querySelectorAll('[data-person]').forEach(b => b.onclick = () => { sync(); d.person = b.dataset.person; renderAdd(); });
+  document.querySelectorAll('[data-debtlink]').forEach(b => b.onclick = () => { sync(); d.debtId = b.dataset.debtlink; const x = debts().find(y => y.id === d.debtId); if (x && x.person) d.person = x.person; renderAdd(); });
   document.querySelectorAll('[data-paylink]').forEach(b => b.onclick = () => { sync(); d.payId = b.dataset.paylink; renderAdd(); });
   $('#cancel').onclick = () => { const back = S.edit ? 'history' : 'overview'; S.draft = null; S.edit = null; setTab(back); };
   $('#save').onclick = async () => {
@@ -815,9 +982,9 @@ function afterSaveText(o) {
 }
 
 // ---------- Бюджет: карманы и план/факт ----------
-const budgetSeg = () => `<div class="seg" style="margin-bottom:10px">${[['pockets', '💼 Карманы'], ['goals', '🎯 Цели'], ['pay', '📅 Платежи'], ['plan', '▤ План и факт']].map(([k, l]) => `<button class="chip ${(S.btab || 'pockets') === k ? 'on' : ''}" data-btab="${k}">${l}</button>`).join('')}</div>`;
+const budgetSeg = () => `<div class="seg" style="margin-bottom:10px">${[['pockets', '💼 Карманы'], ['goals', '🎯 Цели'], ['pay', '📅 Платежи'], ['capital', '🏛 Капитал'], ['plan', '▤ План и факт']].map(([k, l]) => `<button class="chip ${(S.btab || 'pockets') === k ? 'on' : ''}" data-btab="${k}">${l}</button>`).join('')}</div>`;
 function bindBudgetSeg() { document.querySelectorAll('[data-btab]').forEach(b => b.onclick = () => { S.btab = b.dataset.btab; S.dist = false; renderBudget(); }); }
-function renderBudget() { const b = S.btab || 'pockets'; if (b === 'pockets') return renderPockets(); if (b === 'pay') return renderPayments(); if (b === 'goals') return renderGoals(); return renderPlanFact(); }
+function renderBudget() { const b = S.btab || 'pockets'; if (b === 'pockets') return renderPockets(); if (b === 'pay') return renderPayments(); if (b === 'capital') return renderCapital(); if (b === 'goals') return renderGoals(); return renderPlanFact(); }
 function renderPayments() {
   const t = today(), f = payForecast();
   const cal = payCalendar(dAdd(t, -45), dAdd(t, 45));
