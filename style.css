@@ -235,3 +235,31 @@ details.stat>summary::-webkit-details-marker{display:none}
 .sub{font-size:12px}
 .sub:not(.pos):not(.neg){color:var(--muted)}
 .mini-btn{white-space:nowrap}
+
+/* ---------- Игра 2: шкалы, баффы, День уровня, аватар ---------- */
+.gcard{padding:10px 12px}
+.gauges{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin-top:6px}
+.gauge{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;min-width:0}
+.gauge .gbar{flex:1;height:7px;border-radius:5px;background:var(--lilac);overflow:hidden}
+.gauge .gbar i{display:block;height:100%;background:var(--greenInk);border-radius:5px}
+.gauge.yel .gbar i{background:#E0A93B}.gauge.red .gbar i{background:var(--red)}
+.gauge b{font-size:12px;min-width:22px;text-align:right}
+.buff{display:inline-block;background:var(--green);border-radius:12px;padding:1px 8px;margin:1px 0;color:var(--ink);font-size:11.5px}
+.buff.de{background:var(--redBg)}
+.lvlcard{padding:10px 12px;background:linear-gradient(135deg,#FFF4D6,var(--powder))}
+.envs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.env{border:1px dashed var(--lilac2);background:#fff;border-radius:14px;padding:10px;font-size:22px;text-align:center;cursor:default;color:var(--ink)}
+.env.ready{border-style:solid;cursor:pointer;box-shadow:0 2px 10px rgba(107,78,155,.2)}
+.env.open{display:flex;gap:8px;align-items:center;text-align:left;font-size:22px;border-style:solid;background:var(--green)}
+.env.open b{font-size:13px}
+.ava{position:relative;flex:none;width:48px;height:48px;border-radius:50%;padding:3px;background:var(--lilac2)}
+.ava.big{width:70px;height:70px}
+.ava.silver{background:linear-gradient(135deg,#E6E8EE,#9AA3B5,#E6E8EE)}
+.ava.gold{background:linear-gradient(135deg,#FFE7A0,#D9A520,#FFE7A0)}
+.ava.rainbow{background:conic-gradient(#e87ba4,#eda100,#1baf7a,#2a78d6,#6250d6,#e87ba4)}
+.ava.prime{box-shadow:0 0 0 3px #FFE7A0,0 0 16px rgba(237,161,0,.6)}
+.ava-in{width:100%;height:100%;border-radius:50%;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--accent);font-size:20px}
+.ava.big .ava-in{font-size:28px}
+.ava-in img{width:100%;height:100%;object-fit:cover}
+.ava-lvl{position:absolute;right:-4px;bottom:-4px;background:var(--accent);color:#fff;border-radius:10px;font-size:11px;padding:1px 6px;border:2px solid #fff}
+.ava .crown{position:absolute;top:-14px;left:50%;transform:translateX(-50%);font-style:normal;font-size:16px}

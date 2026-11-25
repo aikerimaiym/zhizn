@@ -59,6 +59,8 @@ function dayXP(date) {
   if (tot >= 3 && dn / tot >= 0.9) parts.push(['План на 90%+', R.plan90]);
   let xp = parts.reduce((a, p) => a + p[1], 0);
   if (xp && primeScore(primeAt(mkey(date))).full) { const b = Math.round(xp * 0.25); parts.push(['👑 Прайм ×1.25', b]); xp += b; }
+  const bm = typeof buffMult === 'function' ? buffMult(date) : 1;
+  if (xp && bm !== 1) { const b = Math.round(xp * (bm - 1)); parts.push([bm > 1 ? `Бафф ×${bm}` : `Дебафф ×${bm}`, b]); xp += b; }
   return { xp, parts };
 }
 // Все события с опытом: [{date, xp, what}]
@@ -127,9 +129,9 @@ async function checkAutoAch() {
 function charMini() {
   const G = gameCfg(), gs = gameState(), pr = primeScore(primeAt(mkey(today())));
   return `<div class="charmini" id="charMini" role="button" tabindex="0">
-    <div class="cm-top"><span class="cm-lvl">${gs.level}</span><div style="min-width:0;flex:1"><b>${esc(G.name || 'Мой персонаж')}</b>${G.title ? ` <span class="sub">· ${esc(G.title)}</span>` : ''}
+    <div class="cm-top">${typeof avatarHtml === 'function' ? avatarHtml(gs.level) : `<span class="cm-lvl">${gs.level}</span>`}<div style="min-width:0;flex:1"><b>${esc(G.name || 'Мой персонаж')}</b>${G.title ? ` <span class="sub">· ${esc(G.title)}</span>` : ''}
       <div class="xpbar"><i style="width:${Math.round(gs.into / gs.need * 100)}%"></i></div>
-      <div class="sub">${gs.into} / ${gs.need} XP до ${gs.level + 1} ур. · сегодня +${gs.todayXP} · ⭐ ${gs.stars}${G.prime.length ? ` · Прайм ${fmtHalf(pr.v)}/${pr.n}${pr.full ? ' 👑' : ''}` : ''}</div></div><span class="goarr">›</span></div></div>`;
+      <div class="sub">${gs.into} / ${gs.need} XP до ${gs.level + 1} ур. · сегодня +${gs.todayXP} · ⭐ ${typeof starsBalance === 'function' ? starsBalance().bal : gs.stars}${G.prime.length ? ` · Прайм ${fmtHalf(pr.v)}/${pr.n}${pr.full ? ' 👑' : ''}` : ''}</div></div><span class="goarr">›</span></div></div>`;
 }
 const fmtHalf = v => String(v).replace('.', ',');
 
@@ -138,13 +140,13 @@ async function renderChar() {
   vizTipInit();
   if (await checkAutoAch()) { /* новые ачивки сохранены */ }
   const seg = S.charSeg || 'card';
-  const segs = [['card', '🪪 Карточка'], ['stats', '📊 Характеристики'], ['quests', '🗺 Квесты'], ['ach', '🏅 Ачивки'], ['wheel', '🎡 Колесо и Прайм']];
-  const body = { card: charCard, stats: charStats, quests: charQuests, ach: charAch, wheel: charWheel }[seg]();
+  const segs = [['card', '🪪 Карточка'], ['stats', '📊 Характеристики'], ['skills', '🛠 Навыки'], ['gauges', '📈 Шкалы'], ['quests', '🗺 Квесты'], ['ach', '🏅 Ачивки'], ['rewards', '🎁 Награды'], ['wheel', '🎡 Колесо и Прайм']];
+  const body = { card: charCard, stats: charStats, quests: charQuests, ach: charAch, wheel: charWheel, skills: charSkills, gauges: charGauges, rewards: charRewards }[seg]();
   $('#view').innerHTML = `<button class="ghost" id="chBack" style="font-size:15px;padding:4px 0">‹ Сегодня</button>
     <div class="seg" style="margin:4px 0 10px">${segs.map(([k, l]) => `<button class="chip ${seg === k ? 'on' : ''}" data-chseg="${k}">${l}</button>`).join('')}</div>${body}`;
   $('#chBack').onclick = () => setTab('today');
   document.querySelectorAll('[data-chseg]').forEach(b => b.onclick = () => { S.charSeg = b.dataset.chseg; S.qEdit = null; renderChar(); });
-  ({ card: bindCard, stats: bindStats, quests: bindQuests, ach: bindAch, wheel: bindWheel })[seg]();
+  ({ card: bindCard, stats: bindStats, quests: bindQuests, ach: bindAch, wheel: bindWheel, skills: bindSkills, gauges: bindGauges, rewards: bindRewards })[seg]();
   if (S.newAch && S.newAch.length) { const ids = S.newAch; S.newAch = []; const d = ids.map(achDef).filter(Boolean); if (d.length) toast(`🏅 Новая ачивка: ${d.map(a => a.icon + ' ' + a.name).join(', ')}`); }
 }
 const rer = () => { const y = scrollY; renderChar().then(() => scrollTo(0, y)); };
@@ -157,7 +159,7 @@ function charCard() {
   const mx = Math.max(20, ...days.map(x => x.xp));
   const bars = `<div class="xpdays">${days.map(x => `<div class="xpd" data-tip="${esc(dRu2(x.d) + '|' + x.xp + ' XP')}"><i style="height:${Math.round(x.xp / mx * 100)}%"></i><span>${+x.d.slice(8)}</span></div>`).join('')}</div>`;
   const recent = gs.ev.slice(-12).reverse();
-  return `<div class="card charcard"><div class="cm-top"><span class="cm-lvl big">${gs.level}</span><div style="min-width:0;flex:1">
+  return `<div class="card charcard"><div class="cm-top">${typeof avatarHtml === 'function' ? avatarHtml(gs.level, true) : `<span class="cm-lvl big">${gs.level}</span>`}<div style="min-width:0;flex:1">
       <b style="font-size:18px">${esc(G.name || 'Мой персонаж')}</b>${G.title ? `<div class="sub">${esc(G.title)}</div>` : ''}
       <div class="xpbar"><i style="width:${Math.round(gs.into / gs.need * 100)}%"></i></div>
       <div class="sub">Уровень ${gs.level} · ${gs.into} / ${gs.need} XP до следующего · всего ${gs.total} XP · ⭐ ${gs.stars}</div></div></div>
@@ -166,6 +168,7 @@ function charCard() {
     <h2>Опыт за 14 дней <span class="sub">· сегодня +${gs.todayXP}</span></h2><div class="card vcard viz">${bars}</div>
     <h2>За что опыт</h2><div class="card">${recent.map(e => `<div class="row"><span style="min-width:0"><span class="sub">${dRu2(e.date).slice(0, 5)}</span> ${esc(e.what)}</span><b class="pos">+${e.xp}</b></div>`).join('') || '<div class="row muted">Пока пусто: отметь план, трекеры или сдай вечерний отчёт.</div>'}</div>
     ${gs.ups.length ? `<h2>Уровни</h2><div class="card">${gs.ups.slice().reverse().slice(0, 10).map(u => `<div class="row"><span>⬆️ Уровень ${u.level}</span><span class="sub">${dRu2(u.date)}</span></div>`).join('')}</div>` : ''}
+    ${typeof avatarSettings === 'function' ? avatarSettings() : ''}
     <details class="card" style="padding:4px 12px"><summary style="font-weight:600">🎁 Бонус опыта</summary><div class="muted">За то, что приложение не видит само: например, ИИ-помощник по отчёту предложил +30 за сложный день. Пиши причину честно.</div>
       <div class="grid2"><input class="in" id="bnXp" inputmode="numeric" placeholder="XP, например 30"><input class="in" type="date" id="bnDate" value="${t}"></div>
       <input class="in" id="bnWhy" placeholder="За что" style="margin-top:8px"><button class="btn small" id="bnAdd" style="margin-bottom:8px">Начислить</button>
@@ -184,6 +187,7 @@ function charCard() {
 }
 function bindCard() {
   const G = gameCfg(), sv = () => saveCfg().then(rer);
+  if (typeof bindAvatar === 'function') bindAvatar();
   $('#gName').onchange = e => { G.name = e.target.value.trim(); sv(); };
   $('#gTitle').onchange = e => { G.title = e.target.value.trim(); sv(); };
   $('#gSzName').onchange = e => { G.season.name = e.target.value.trim() || G.season.name; sv(); };
@@ -198,7 +202,8 @@ function bindCard() {
     try {
       const data = JSON.parse(await f.text()); if (data.app !== 'zhizn-game') throw new Error('это не файл персонажа');
       if (!confirm(`Загрузить «${data.title || f.name}»? Характеристики, вехи, Прайм, сферы и настройки игры заменятся.`)) return;
-      for (const k of ['name', 'start', 'season', 'stats', 'perks', 'achievements', 'prime', 'spheres']) if (data[k] !== undefined) G[k] = data[k];
+      for (const k of ['name', 'start', 'season', 'stats', 'perks', 'achievements', 'prime', 'spheres', 'gauges', 'energyFrom', 'buffs', 'skills', 'titles', 'rewards', 'cards']) if (data[k] !== undefined) G[k] = data[k];
+      if (data.fund) G.fund = { ...(G.fund || {}), ...data.fund, limit: (G.fund && G.fund.limit) || 0 };   // лимит фонда задаёт сам человек
       if (data.charTitle !== undefined) G.title = data.charTitle;   // «title» в файле — это название самого файла
       if (data.xp) G.xp = { ...DEF_XP, ...data.xp };
       await saveCfg(); toast('Персонаж загружен ✓'); rer();

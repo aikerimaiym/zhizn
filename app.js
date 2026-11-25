@@ -1850,7 +1850,8 @@ const Lock = {
 };
 
 // ---------- Запуск ----------
-(async function init() {
+// Запуск — только когда загружены все файлы приложения (life.js, character.js и др. подключаются после app.js)
+async function init() {
   try {
     await DB.open();
     S.ops = await DB.all();
@@ -1877,4 +1878,5 @@ const Lock = {
     if (Sync.enabled()) Sync.run(false).catch(() => {});
   });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
-})();
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
