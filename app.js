@@ -10,9 +10,9 @@ const TYPES = [
   { t: 'Помощь', sign: 1, grp: '', person: true, to: false, hint: 'Деньги от людей — не свой доход' },
   { t: 'Перевод между счетами', sign: -1, grp: '', person: false, to: true, hint: 'Между своими счетами в одной валюте. Общий баланс не меняется' },
   { t: 'Обмен валюты', sign: -1, grp: '', person: false, to: true, fx: true, hint: 'Покупка или продажа валюты или золота: укажи, сколько отдала и сколько получила' },
-  { t: 'Заём получен', sign: 1, grp: '', person: true, to: false, hint: 'Мне дали в долг' },
-  { t: 'Заём выдан', sign: -1, grp: '', person: true, to: false, hint: 'Я дала в долг' },
-  { t: 'Мне вернули долг', sign: 1, grp: '', person: true, to: false, hint: '' },
+  { t: 'Заём получен', sign: 1, grp: '', person: true, to: false, hint: 'Мне дали в долг: деньги приходят на счёт, долг появится в «Бюджет → Капитал»' },
+  { t: 'Заём выдан', sign: -1, grp: '', person: true, to: false, hint: 'Я дала в долг: деньги уходят со счёта, долг появится в «Бюджет → Капитал → Мне должны»' },
+  { t: 'Мне вернули долг', sign: 1, grp: '', person: true, to: false, hint: 'Мне вернули деньги, которые я давала в долг — долг уменьшится' },
   { t: 'Я вернула долг', sign: -1, grp: '', person: true, to: false, hint: 'В том числе платёж по рассрочке' },
   { t: 'Корректировка +', sign: 1, grp: '', person: false, to: false, hint: 'Сверка: в банке больше' },
   { t: 'Корректировка −', sign: -1, grp: '', person: false, to: false, hint: 'Сверка: в банке меньше' },
@@ -669,7 +669,7 @@ function debtLinkRow(d) {
   if (!want) return '';
   const fit = debts().filter(x => (want === 'lent') === isLent(x) && (!d.person || !x.person || x.person === d.person));
   if (!fit.length) return '';
-  return `<label class="f">По какому долгу?</label><div class="seg">${fit.map(x => `<button class="chip ${d.debtId === x.id ? 'on' : ''}" data-debtlink="${x.id}">${esc(x.name)}</button>`).join('')}<button class="chip ${!d.debtId ? 'on' : ''}" data-debtlink="">Другое</button></div>`;
+  return `<label class="f">По какому долгу?</label><div class="seg">${fit.map(x => `<button class="chip ${d.debtId === x.id ? 'on' : ''}" data-debtlink="${x.id}">${esc(x.name)}</button>`).join('')}<button class="chip ${!d.debtId ? 'on' : ''}" data-debtlink="">${d.type === 'Заём выдан' || d.type === 'Заём получен' ? '＋ Новый долг' : 'Другое'}</button></div>`;
 }
 
 // ---------- Навигация ----------
@@ -941,6 +941,12 @@ function renderAdd() {
     const err = validate(op); if (err) { $('#err').textContent = '⚠ ' + err; return; }
     const rule = depositRuleWarn(op); if (rule && !confirm(rule + '\n\nВсё равно сохранить?')) return;
     const now = Date.now();
+    // Новый заём без выбранного долга — долг заводится сам (чтобы он сразу был виден в «Капитал»)
+    if (!S.edit && (op.type === 'Заём выдан' || op.type === 'Заём получен') && !op.debtId) {
+      const lentKind = op.type === 'Заём выдан', id = uid().slice(0, 8);
+      S.cfg.debts = [...(S.cfg.debts || []), { id, kind: lentKind ? 'lent' : 'loan', name: (lentKind ? 'Должен(на) мне: ' : 'Я должна: ') + op.person + ' (' + op.date.split('-').reverse().join('.') + ')', person: op.person, balance: 0, balanceDate: op.date, balanceSetAt: now - 1, monthly: 0, day: null, rate: 0, account: op.account }];
+      op.debtId = id; await saveCfg();
+    }
     if (S.edit) { Object.assign(op, { id: S.edit, updatedAt: now, device: DEVICE }); const i = S.ops.findIndex(x => x.id === S.edit); op.createdAt = S.ops[i].createdAt; S.ops[i] = op; }
     else { Object.assign(op, { id: uid(), createdAt: now, updatedAt: now, device: DEVICE, deleted: false }); S.ops.push(op); }
     await DB.put(op);
