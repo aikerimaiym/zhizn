@@ -37,6 +37,7 @@ const CUR = Object.fromEntries(CURRENCIES.map(c => [c.code, c]));
 const baseCur = () => (S.cfg && S.cfg.base) || 'KZT';
 const accCur = a => (a && a.cur) || baseCur();                       // старые счета без валюты — в основной валюте
 const accByName = n => S.cfg.accounts.find(a => a.name === n);
+const openAccs = () => S.cfg.accounts.filter(a => !a.closed);
 const curOf = name => accCur(accByName(name));
 const isMetal = code => !!(CUR[code] && CUR[code].metal);
 // Деньги: до 2 знаков после запятой (тиыны), целые — без «,00»
@@ -324,7 +325,6 @@ async function addPocketMoves(moves, comment) {
 // Номинальная ставка — «на бумаге», по ней считается начисление (ставка / 12 в месяц).
 // Эффективная (ГЭСВ) — с учётом капитализации: (1 + ном/12)^12 − 1. Если указана одна — вторая рассчитывается.
 // Приблизительно: банки считают по-разному (по дням, минимальному остатку) — точная сумма та, что пришла.
-const DEP_TYPES = ['Несрочный', 'Срочный', 'Сберегательный', 'Другое'];
 const capOn = a => a.capitalize !== false;
 function nominalRate(a) {
   if (+a.rate > 0) return +a.rate;
@@ -358,8 +358,11 @@ function depositBlock(a, i, bal) {
   const left = end ? Math.max(0, dDiff(end, t)) : 0, monthsLeft = end ? Math.max(0, Math.round(dDiff(end, t) / 30.44)) : 0;
   return `<div style="background:var(--green);border-radius:12px;padding:8px 10px;margin-top:6px">
     <b style="font-size:13px">Депозит</b>
-    <div class="grid2"><div><label class="f">Тип</label><select class="in" data-acc="${i}" data-k="depType"><option value="">—</option>${DEP_TYPES.map(x => `<option ${x === a.depType ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
-      <div><label class="f">День начисления</label><input class="in" data-acc="${i}" data-k="payDay" inputmode="numeric" value="${a.payDay || ''}" placeholder="1–31"></div></div>
+    <div class="grid2"><div><label class="f">Пополнять</label><select class="in" data-acc="${i}" data-k="topUp">${[['yes', 'можно'], ['no', 'нельзя']].map(([v, l]) => `<option value="${v}" ${(a.topUp || 'yes') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div><label class="f">Снимать</label><select class="in" data-acc="${i}" data-k="withdraw">${Object.entries(WITHDRAW).map(([v, l]) => `<option value="${v}" ${(a.withdraw || 'free') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
+    ${a.withdraw === 'partial' ? `<label class="f">Неснижаемый остаток</label><input class="in" data-acc="${i}" data-k="minBal" inputmode="decimal" value="${a.minBal || ''}" placeholder="сколько должно оставаться">` : ''}
+    <div class="muted" style="margin-top:4px">${esc(depRulesText(a))}</div>
+    <label class="f">День начисления процентов</label><input class="in" data-acc="${i}" data-k="payDay" inputmode="numeric" value="${a.payDay || ''}" placeholder="1–31">
     <div class="grid2"><div><label class="f">Номинальная ставка, %</label><input class="in" data-acc="${i}" data-k="rate" inputmode="decimal" value="${a.rate || ''}" placeholder="например, 14"></div>
       <div><label class="f">Эффективная (ГЭСВ), %</label><input class="in" data-acc="${i}" data-k="rateEff" inputmode="decimal" value="${a.rateEff || ''}" placeholder="например, 14,93"></div></div>
     <div class="grid2"><div><label class="f">Дата открытия</label><input class="in" type="date" data-acc="${i}" data-k="openDate" value="${a.openDate || ''}"></div>
@@ -375,12 +378,55 @@ function depositBlock(a, i, bal) {
       <p style="margin:4px 0"><b>Номинальная</b> — ставка «на бумаге». По ней банк начисляет проценты: в месяц ≈ остаток × ставка / 12.</p>
       <p style="margin:4px 0"><b>Эффективная (ГЭСВ)</b> — реальная доходность за год с учётом того, что проценты прибавляются к вкладу и тоже приносят проценты. Поэтому она чуть выше номинальной.</p>
       <p style="margin:4px 0">Обе ставки есть в договоре и в приложении банка. Впиши хотя бы одну — вторую приложение рассчитает. Ставки меняются — сверяй время от времени.</p>
-    </div></details></div>`;
+    </div></details>
+    <details><summary class="muted" style="font-weight:600">Пополнять и снимать — зачем это?</summary><div class="muted">
+      <p style="margin:4px 0">У депозитов разные правила: в одни можно и класть, и снимать в любой момент; в другие можно только класть до конца срока; в третьи нельзя ни то, ни другое. Обычно банки называют их «несрочный», «срочный» и «сберегательный», но точные правила — в твоём договоре.</p>
+      <p style="margin:4px 0">Приложение предупредит, если ты записываешь операцию, которая нарушает условия (например, снятие до окончания срока — банк может не начислить проценты).</p>
+    </div></details>
+    ${S.closeAcc === a.name ? closeDepForm(a, bal) : `<button class="btn small light" data-closeacc="${esc(a.name)}" style="margin-top:8px">🔒 Закрыть депозит</button>`}
+    </div>`;
+}
+const WITHDRAW = { free: 'можно в любой момент', partial: 'частично (до неснижаемого остатка)', no: 'нельзя до окончания срока' };
+function depRulesText(a) {
+  const up = (a.topUp || 'yes') === 'yes', w = a.withdraw || 'free';
+  if (up && w === 'free') return 'Можно и пополнять, и снимать в любой момент (обычно «несрочный» депозит).';
+  if (up && w === 'partial') return `Пополнять можно, снимать — пока остаётся не меньше ${a.minBal ? fmt(+a.minBal, accCur(a)) : 'неснижаемого остатка'}.`;
+  if (up && w === 'no') return 'Деньги только ложатся: пополнять можно, снимать до окончания срока нельзя — иначе можно потерять проценты (обычно «срочный» депозит).';
+  if (!up && w === 'no') return 'Ни пополнять, ни снимать до окончания срока (обычно «сберегательный» депозит).';
+  return w === 'partial' ? 'Пополнять нельзя, снимать — до неснижаемого остатка.' : 'Пополнять нельзя, снимать можно.';
+}
+// Предупреждение, если операция нарушает условия депозита (возвращает текст или '')
+function depositRuleWarn(o) {
+  const T = TYPE[o.type]; if (!T) return '';
+  const msgs = [], b = balances();
+  const out = S.cfg.accounts.find(a => a.name === o.account && a.savings);
+  if (out && T.sign < 0) {
+    const w = out.withdraw || 'free', end = depEnd(out);
+    if (w === 'no' && (!end || o.date < end)) msgs.push(`По условиям с депозита «${out.name}» нельзя снимать${end ? ' до ' + end.split('-').reverse().join('.') : ''} — банк может не начислить проценты.`);
+    if (w === 'partial' && +out.minBal > 0 && b[out.name] - o.amount < +out.minBal) msgs.push(`После этой операции на «${out.name}» останется меньше неснижаемого остатка (${fmt(+out.minBal, accCur(out))}).`);
+  }
+  const inAcc = S.cfg.accounts.find(a => a.savings && (T.to ? a.name === o.to : (T.sign > 0 && a.name === o.account)));
+  const isInterest = o.type === 'Доход' && o.cat === 'Банк' && o.sub === 'Проценты по депозиту';
+  if (inAcc && !isInterest && inAcc.topUp === 'no') msgs.push(`По условиям депозит «${inAcc.name}» нельзя пополнять.`);
+  return msgs.join('\n');
+}
+// Закрытие депозита: последние проценты (если есть) + перевод всего остатка на выбранный счёт; счёт уходит в «Закрытые»
+function closeDepForm(a, bal) {
+  const same = openAccs().filter(x => x.name !== a.name && accCur(x) === accCur(a));
+  return `<div class="card" style="padding:8px 10px;margin-top:8px"><b>🔒 Закрытие депозита</b>
+    <div class="muted">Сейчас на нём ${fmt(bal, accCur(a))}. Если при закрытии банк начислил последние проценты — впиши их, они запишутся доходом.</div>
+    <div class="grid2"><div><label class="f">Последние проценты</label><input class="in" id="clInt" inputmode="decimal" placeholder="0"></div><div><label class="f">Дата закрытия</label><input class="in" type="date" id="clDate" value="${today()}"></div></div>
+    ${same.length ? `<label class="f">Куда перевести все деньги</label><select class="in" id="clTo">${same.map(x => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join('')}</select>
+    <button class="btn small" data-closeok="${esc(a.name)}">Закрыть депозит</button>` : '<div class="err">Нет открытого счёта в этой валюте, куда перевести деньги — добавь его.</div>'}
+    <button class="btn small light" data-closecancel="1">Отмена</button></div>`;
+}
+function closedAccRow(a, i) {
+  return `<div class="row"><span class="sub">🔒 ${esc(a.name)} · закрыт ${a.closedAt ? a.closedAt.split('-').reverse().join('.') : ''}</span><button class="btn small light" data-reopen="${i}" style="margin:0">Открыть снова</button></div>`;
 }
 // Ожидаемые проценты как «поступления» в календаре платежей (не редактируются — считаются из счёта)
 function interestPayments() {
   const b = balances();
-  return S.cfg.accounts.filter(a => a.savings && nominalRate(a) > 0 && !isMetal(accCur(a))).map(a => ({
+  return S.cfg.accounts.filter(a => !a.closed && a.savings && nominalRate(a) > 0 && !isMetal(accCur(a))).map(a => ({
     id: 'int:' + a.name, name: 'Проценты: ' + a.name, kind: 'in', auto: true, toSavings: true,
     amount: r2(toBase(interestMonthly(a, b[a.name]), accCur(a))), account: a.name, cat: 'Банк', sub: 'Проценты по депозиту', person: '',
     freq: 'month', day: +a.payDay || 1, start: S.cfg.startDate, end: a.autoRenew ? '' : depEnd(a), active: true,
@@ -486,7 +532,7 @@ function renderOverview() {
   const now = balances();
   S.cfg.accounts.filter(a => a.fact !== null && a.fact !== '' && a.fact !== undefined && r2(+a.fact) !== r2(now[a.name])).forEach(a => warns.push(['warn', `⚠ ${a.name}: в банке ${fmt(+a.fact, accCur(a))}, по учёту ${fmt(now[a.name], accCur(a))} — найди пропущенную операцию или внеси «Корректировку»`]));
   if (ps.free < 0) warns.push(['warn', `⚠ Карманы больше, чем денег, на ${money(-ps.free)} — «Бюджет → Карманы»`]);
-  S.cfg.accounts.filter(a => depEnd(a) && dDiff(depEnd(a), today()) > 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', a.autoRenew ? `🔄 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} и продлится автоматически — в этот день проверь новую ставку` : `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`]));
+  S.cfg.accounts.filter(a => !a.closed && depEnd(a) && dDiff(depEnd(a), today()) > 0 && dDiff(depEnd(a), today()) <= 30).forEach(a => warns.push(['info', a.autoRenew ? `🔄 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} и продлится автоматически — в этот день проверь новую ставку` : `🏦 Депозит «${a.name}» заканчивается ${depEnd(a).split('-').reverse().join('.')} — реши: продлить, переоформить или забрать`]));
   if (allPayments().length) {
     const pf = payForecast(), soon = payCalendar(today(), dAdd(today(), 3)).filter(r => r.p.kind === 'out' && r.status !== 'paid');
     pf.overdue.forEach(r => warns.push(['warn', `⚠ Просрочен платёж «${r.p.name}» (${dHuman(r.due)}) — ${money(r.left)}`]));
@@ -525,20 +571,20 @@ function renderOverview() {
   <h2>Бюджет по категориям</h2>
   <div class="card">${topCats.length ? topCats.map(catBar).join('') : '<div class="row muted">Пока нет плана и расходов</div>'}</div>
   <h2>Счета</h2>
-  <div class="card">${S.cfg.accounts.map(a => accRow(a, b[a.name])).join('')}</div>
+  <div class="card">${S.cfg.accounts.filter(a => !a.closed || r2(b[a.name])).map(a => accRow(a, b[a.name])).join('')}</div>
   ${S.cfg.accounts.some(a => accCur(a) !== baseCur()) ? `<p class="muted">Счета в другой валюте и металлы пересчитаны в ${CUR[baseCur()].sym} по текущему курсу${Rates.data ? ' (' + esc(Rates.data.src) + ', ' + esc(Rates.data.date) + ')' : ''}.</p>` : ''}
   ${people.length ? `<h2>Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
   bindMaturity();
 }
 // ---------- Окончание срока депозита: «что делать со средствами?» ----------
 const matSnoozed = a => { try { return localStorage.getItem('zhizn-mat-' + a.name) === today(); } catch (e) { return false; } };
-const maturityDue = () => S.cfg.accounts.filter(a => a.savings && depEnd(a) && depEnd(a) <= today() && a.handledEnd !== depEnd(a) && !matSnoozed(a));
+const maturityDue = () => S.cfg.accounts.filter(a => !a.closed && a.savings && depEnd(a) && depEnd(a) <= today() && a.handledEnd !== depEnd(a) && !matSnoozed(a));
 // Следующий срок при продлении: тот же срок от даты окончания (по дням, если срок задан датой по договору)
 const nextEnd = a => { const end = depEnd(a); return termN(a) ? termFrom(a, end) : (a.openDate ? dAdd(end, dDiff(end, a.openDate)) : ''); };
 function maturityHtml() {
   return maturityDue().map(a => {
     const end = depEnd(a), c = accCur(a), bal = balances()[a.name], ui = (S.matUI && S.matUI.acc === a.name) ? S.matUI.mode : '';
-    const same = S.cfg.accounts.filter(x => x.name !== a.name && accCur(x) === c);
+    const same = S.cfg.accounts.filter(x => !x.closed && x.name !== a.name && accCur(x) === c);
     const head = a.autoRenew
       ? `🔄 <b>Срок депозита «${esc(a.name)}» закончился ${end.split('-').reverse().join('.')}.</b> Банк продлевает его автоматически. Проверь новые условия: после продления ставка и дата окончания могут быть другими.`
       : `🏦 <b>Срок депозита «${esc(a.name)}» закончился ${end.split('-').reverse().join('.')}.</b> На нём ${fmt(bal, c)}. Что делать со средствами?`;
@@ -553,6 +599,7 @@ function maturityHtml() {
       <div class="seg" style="margin-top:8px">
         <button class="chip ${ui === 'renew' ? 'on' : ''}" data-mat="renew|${esc(a.name)}">${a.autoRenew ? '✓ Продлён — подтвердить' : '🔄 Продлить'}</button>
         <button class="chip ${ui === 'move' ? 'on' : ''}" data-mat="move|${esc(a.name)}">💳 Перевести на счёт</button>
+        <button class="chip" data-mat="close|${esc(a.name)}">🔒 Закрыть депозит</button>
         ${a.autoRenew ? '' : `<button class="chip" data-mat="open|${esc(a.name)}">Оставить без срока</button>`}
         <button class="chip" data-mat="later|${esc(a.name)}">Позже</button></div>
       ${ui === 'renew' ? renewForm : ui === 'move' ? moveForm : ''}</div>`;
@@ -563,6 +610,7 @@ function bindMaturity() {
     const [act, name] = btn.dataset.mat.split('|'), a = S.cfg.accounts.find(x => x.name === name); if (!a) return;
     const end = depEnd(a);
     if (act === 'renew' || act === 'move') { S.matUI = { acc: name, mode: act }; return renderOverview(); }
+    if (act === 'close') { S.closeAcc = name; S.matUI = null; setTab('more'); setTimeout(() => { const el = document.querySelector('#clInt'); if (el) el.scrollIntoView({ block: 'center' }); }, 80); return; }
     if (act === 'later') { try { localStorage.setItem('zhizn-mat-' + name, today()); } catch (e) {} S.matUI = null; toast('Напомню завтра'); return renderOverview(); }
     if (act === 'open') { a.termN = null; delete a.termMonths; a.endDate = ''; a.handledEnd = end; await saveCfg(); S.matUI = null; toast('Депозит без срока'); return renderOverview(); }
     if (act === 'renewOk') {
@@ -583,9 +631,10 @@ function bindMaturity() {
 // Строка счёта: остаток в его валюте, для чужой валюты — «≈ в основной»
 function accRow(a, v) {
   const c = accCur(a), r = Rates.get(c);
-  const eq = (c !== baseCur() ? `<div class="sub" style="text-align:right">${r ? '≈ ' + money(v * r) : 'нет курса'}</div>` : '')
-    + (nominalRate(a) > 0 && a.savings ? `<div class="sub pos" style="text-align:right">≈ +${fmt(interestMonthly(a, v), c)}/мес · ${fmtPct(nominalRate(a))}${effectiveRate(a) ? ' (эфф. ' + fmtPct(effectiveRate(a)) + ')' : ''}${depEnd(a) ? ' · до ' + depEnd(a).split('-').reverse().join('.') : ''}</div>` : '');
-  return `<div class="row"><span>${esc(a.name)}${a.savings || isMetal(c) ? ' <span class="sub">· накопления</span>' : ''}</span><div style="text-align:right;white-space:nowrap"><b class="${v < 0 ? 'neg' : ''}">${fmt(v, c)}</b>${eq}</div></div>`;
+  const eq = c !== baseCur() ? `<div class="sub" style="text-align:right">${r ? '≈ ' + money(v * r) : 'нет курса'}</div>` : '';
+  // строка про проценты — отдельной строкой во всю ширину, с переносом (иначе растягивает экран телефона)
+  const dep = nominalRate(a) > 0 && a.savings ? `<div class="sub pos" style="margin-top:2px">≈ +${fmt(interestMonthly(a, v), c)}/мес · ${fmtPct(nominalRate(a))}${effectiveRate(a) ? ' (эфф. ' + fmtPct(effectiveRate(a)) + ')' : ''}${depEnd(a) ? ' · до ' + depEnd(a).split('-').reverse().join('.') : ''}</div>` : '';
+  return `<div class="row" style="display:block"><div style="display:flex;justify-content:space-between;gap:8px"><span style="min-width:0">${esc(a.name)}${a.savings || isMetal(c) ? ' <span class="sub">· накопления</span>' : ''}</span><div style="text-align:right;white-space:nowrap"><b class="${v < 0 ? 'neg' : ''}">${fmt(v, c)}</b>${eq}</div></div>${dep}</div>`;
 }
 function catBar(c) {
   const r = c.plan ? c.fact / c.plan : (c.fact ? 2 : 0);
@@ -621,7 +670,7 @@ function renderHistory() {
 }
 
 // ---------- Новая операция / правка ----------
-function newDraft() { return { type: 'Расход', date: today(), account: (S.cfg.accounts.some(a => a.name === lastAcc.get()) ? lastAcc.get() : S.cfg.accounts[0].name), cat: '', sub: '', amount: '', amountTo: '', rate: '', person: '', to: '', comment: '' }; }
+function newDraft() { const open = openAccs(); return { type: 'Расход', date: today(), account: (open.some(a => a.name === lastAcc.get()) ? lastAcc.get() : (open[0] || S.cfg.accounts[0]).name), cat: '', sub: '', amount: '', amountTo: '', rate: '', person: '', to: '', comment: '' }; }
 function renderAdd() {
   if (!S.draft) S.draft = newDraft();
   const d = S.draft, T = TYPE[d.type];
@@ -629,7 +678,7 @@ function renderAdd() {
   const subs = T.grp === 'exp' ? ((S.cfg.exp.find(c => c.cat === d.cat) || {}).subs || []).map(s => s.name) : T.grp === 'inc' ? ((S.cfg.inc.find(c => c.cat === d.cat) || {}).subs || []) : [];
   const freq = {}; live().forEach(o => { if (o.type === d.type && o.cat) freq[o.cat] = (freq[o.cat] || 0) + 1; });
   cats.sort((a, b) => (freq[b] || 0) - (freq[a] || 0));
-  const accOpts = S.cfg.accounts.map(a => `<option value="${esc(a.name)}" ${a.name === d.account ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('');
+  const accOpts = S.cfg.accounts.filter(a => !a.closed || a.name === d.account).map(a => `<option value="${esc(a.name)}" ${a.name === d.account ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('');
   const cFrom = curOf(d.account), cTo = d.to ? curOf(d.to) : '';
   const symFrom = (CUR[cFrom] || {}).sym || cFrom;
   // Курс для операции в чужой валюте: сохранённый в операции → ручной/автоматический
@@ -649,7 +698,7 @@ function renderAdd() {
   ${payLinkRow(d)}
   <div class="grid2"><div><label class="f">${T.to ? 'Со счёта' : 'Счёт'}</label><select class="in" id="account">${accOpts}</select></div>
     <div><label class="f">Дата</label><input class="in" type="date" id="date" value="${d.date}"></div></div>
-  ${T.to ? `<label class="f">На счёт</label><select class="in" id="to"><option value="">—</option>${S.cfg.accounts.map(a => `<option value="${esc(a.name)}" ${a.name === d.to ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('')}</select>` : ''}
+  ${T.to ? `<label class="f">На счёт</label><select class="in" id="to"><option value="">—</option>${S.cfg.accounts.filter(a => !a.closed || a.name === d.to).map(a => `<option value="${esc(a.name)}" ${a.name === d.to ? 'selected' : ''}>${esc(a.name)}${accCur(a) !== baseCur() ? ' · ' + accCur(a) : ''}</option>`).join('')}</select>` : ''}
   ${fxRow}${rateRow}
   <label class="f">Комментарий</label><input class="in" id="comment" value="${esc(d.comment)}" placeholder="необязательно">
   <div class="err" id="err"></div>
@@ -681,6 +730,7 @@ function renderAdd() {
     if (!T2.to && c0 !== baseCur()) { const rv = parseFloat(String(d.rate).replace(/\s/g, '').replace(',', '.')); if (!(rv > 0)) { $('#err').textContent = '⚠ Укажи курс (нет интернета — впиши вручную)'; return; } op.rate = rv; }
     else op.rate = 0;
     const err = validate(op); if (err) { $('#err').textContent = '⚠ ' + err; return; }
+    const rule = depositRuleWarn(op); if (rule && !confirm(rule + '\n\nВсё равно сохранить?')) return;
     const now = Date.now();
     if (S.edit) { Object.assign(op, { id: S.edit, updatedAt: now, device: DEVICE }); const i = S.ops.findIndex(x => x.id === S.edit); op.createdAt = S.ops[i].createdAt; S.ops[i] = op; }
     else { Object.assign(op, { id: uid(), createdAt: now, updatedAt: now, device: DEVICE, deleted: false }); S.ops.push(op); }
@@ -731,7 +781,7 @@ function renderPayments() {
   const cal = payCalendar(dAdd(t, -45), dAdd(t, 45));
   const shown = cal.filter(r => r.due >= dAdd(t, -45) && (r.status !== 'paid' || r.due >= dAdd(t, -10)));
   const ed = S.payEdit, p0 = ed ? (payments().find(p => p.id === ed) || {}) : null;
-  const accOpts = sel => S.cfg.accounts.map(a => `<option value="${esc(a.name)}" ${a.name === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  const accOpts = sel => openAccs().map(a => `<option value="${esc(a.name)}" ${a.name === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
   $('#view').innerHTML = budgetSeg() + `
   <div class="cards">
     <div class="kpi powder"><div class="l">Платежи за 7 дней</div><div class="v">${money(f.out7)}</div><div class="s">ещё не оплачено</div></div>
@@ -789,7 +839,7 @@ function bindPayForm(p0) {
     cat: $('#pfCat').value, sub: $('#pfSub').value, person: $('#pfPerson') ? $('#pfPerson').value : '', freq: $('#pfFreq').value,
     day: $('#pfDay') ? +$('#pfDay').value : 0, month: $('#pfMonth') ? +$('#pfMonth').value : 0, n: $('#pfN') ? Math.max(1, +$('#pfN').value || 1) : 1,
     start: $('#pfStart').value, end: $('#pfEnd').value });
-  const redraw = draft => { S.payDraft = draft; const box = $('#pfName').closest('.card'); box.innerHTML = payForm(draft, sel => S.cfg.accounts.map(a => `<option value="${esc(a.name)}" ${a.name === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('')); bindPayForm(draft); };
+  const redraw = draft => { S.payDraft = draft; const box = $('#pfName').closest('.card'); box.innerHTML = payForm(draft, sel => openAccs().map(a => `<option value="${esc(a.name)}" ${a.name === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('')); bindPayForm(draft); };
   document.querySelectorAll('[data-pfkind]').forEach(b => b.onclick = () => redraw({ ...read(), kind: b.dataset.pfkind, cat: '', sub: '' }));
   $('#pfCat').onchange = () => redraw({ ...read(), sub: '' });
   $('#pfFreq').onchange = () => redraw(read());
@@ -1011,7 +1061,7 @@ function renderMore() {
     <div class="muted" style="margin-top:4px">Начальные остатки вводятся на эту дату. Операции раньше неё не считаются — чтобы деньги не учлись дважды.</div>
     <details style="margin-top:6px"><summary class="muted" style="font-weight:600">Что такое «Сейчас в банке (сверка)»?</summary>
     <div class="muted">Проверка, не забыла ли ты внести какую-то операцию. Раз в неделю открой банк и впиши, сколько там денег на самом деле. Совпало с учётом — всё внесено ✓. Не совпало — на «Обзоре» появится подсказка: найди пропущенную операцию или внеси разницу как «Корректировка». Поле можно оставлять пустым.</div></details></div>
-  <div class="card">${S.cfg.accounts.map((a, i) => `<div class="row" style="display:block">
+  <div class="card">${S.cfg.accounts.map((a, i) => a.closed ? closedAccRow(a, i) : `<div class="row" style="display:block">
     <div style="display:flex;justify-content:space-between"><b>${esc(a.name)}</b><span>${fmt(b[a.name], accCur(a))}</span></div>
     <label class="f">Валюта счёта</label><select class="in" data-acc="${i}" data-k="cur">${CURRENCIES.map(c => `<option value="${c.code}" ${c.code === accCur(a) ? 'selected' : ''}>${c.code} — ${esc(c.name)}</option>`).join('')}</select>
     <div class="grid2"><div><label class="f">Начальный остаток на ${S.cfg.startDate.split('-').reverse().join('.')}${isMetal(accCur(a)) ? ', г' : ''}</label><input class="in" data-acc="${i}" data-k="start" inputmode="numeric" value="${a.start || ''}" placeholder="0"></div>
@@ -1082,7 +1132,7 @@ function renderMore() {
     if (k === 'savings') a.savings = inp.checked;
     else if (k === 'capitalize') a.capitalize = inp.checked;
     else if (k === 'payDay') a.payDay = Math.min(31, Math.max(0, Math.round(num(inp.value)))) || null;
-    else if (k === 'openDate' || k === 'depType' || k === 'endDate' || k === 'termUnit') a[k] = inp.value || '';
+    else if (k === 'openDate' || k === 'depType' || k === 'endDate' || k === 'termUnit' || k === 'topUp' || k === 'withdraw') a[k] = inp.value || '';
     else if (k === 'autoRenew') a.autoRenew = inp.checked;
     else if (k === 'termN') { a.termN = Math.max(0, Math.round(num(inp.value))) || null; delete a.termMonths; }
     else if (k === 'cur') {
@@ -1100,6 +1150,23 @@ function renderMore() {
     if (early && !confirm(`Операций раньше ${v.split('-').reverse().join('.')}: ${early}. Они перестанут учитываться. Продолжить?`)) return renderMore();
     S.cfg.startDate = v; await saveCfg(); S.month = mkey(v > today() ? v : today()); toast('Дата начала учёта: ' + v.split('-').reverse().join('.')); renderMore();
   });
+  document.querySelectorAll('[data-closeacc]').forEach(b => b.onclick = () => { S.closeAcc = b.dataset.closeacc; renderMore(); });
+  document.querySelectorAll('[data-closecancel]').forEach(b => b.onclick = () => { S.closeAcc = null; renderMore(); });
+  document.querySelectorAll('[data-closeok]').forEach(b => b.onclick = async () => {
+    const a = S.cfg.accounts.find(x => x.name === b.dataset.closeok); if (!a) return;
+    const date = $('#clDate').value || today(), intr = num($('#clInt').value), to = $('#clTo').value, now = Date.now();
+    if (date < S.cfg.startDate) { toast('⚠ Дата раньше начала учёта'); return; }
+    const mk = o => ({ id: uid(), date, cat: '', sub: '', person: '', to: '', comment: 'закрытие депозита', rate: 0, amountTo: 0, createdAt: now, updatedAt: now, device: DEVICE, deleted: false, ...o });
+    const ops = [];
+    if (intr > 0) ops.push(mk({ type: 'Доход', account: a.name, cat: 'Банк', sub: 'Проценты по депозиту', amount: intr }));
+    const bal = r2(balances()[a.name] + intr);
+    if (!confirm(`Закрыть «${a.name}»?${intr > 0 ? '\nПоследние проценты: ' + fmt(intr, accCur(a)) : ''}\nПеревести ${fmt(bal, accCur(a))} → «${to}».\nСчёт уйдёт в «Закрытые», история операций сохранится.`)) return;
+    if (bal > 0) ops.push(mk({ type: 'Перевод между счетами', account: a.name, to, amount: bal }));
+    for (const op of ops) { S.ops.push(op); await DB.put(op); }
+    a.closed = true; a.closedAt = date; if (depEnd(a)) a.handledEnd = depEnd(a);
+    S.closeAcc = null; await saveCfg(); toast(`Депозит «${a.name}» закрыт, ${fmt(bal, accCur(a))} → ${to}`); renderMore();
+  });
+  document.querySelectorAll('[data-reopen]').forEach(b => b.onclick = async () => { const a = S.cfg.accounts[+b.dataset.reopen]; a.closed = false; delete a.closedAt; await saveCfg(); toast('Счёт снова открыт'); renderMore(); });
   document.querySelectorAll('[data-delacc]').forEach(btn => btn.onclick = async () => {
     const a = S.cfg.accounts[+btn.dataset.delacc];
     if (live().some(o => o.account === a.name || o.to === a.name)) { toast('По этому счёту есть операции — убрать нельзя'); return; }

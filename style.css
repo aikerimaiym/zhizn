@@ -66,3 +66,13 @@ details summary{cursor:pointer;padding:8px 0;font-weight:600}
 .day{font-size:12px;color:var(--muted);margin:12px 0 4px;font-weight:600}
 .err{color:var(--red);font-size:13px;margin-top:6px}
 input.mini{width:110px;border:1px solid var(--line);border-radius:10px;padding:5px 8px;text-align:right;background:#fff}
+/* Защита от «плавания» страницы на телефоне: длинные строки переносятся, ничего не выходит за край */
+html,body{overflow-x:hidden}
+main,.card,.kpi,.row,.warn,.ok,.info{min-width:0;overflow-wrap:anywhere}
+.row>*{min-width:0}
+.kpi .v{font-size:clamp(15px,4.8vw,19px)}
+.sub{overflow-wrap:anywhere}
+table.t{table-layout:auto}
+table.t td{overflow-wrap:anywhere}
+input.mini{max-width:42vw}
+select.in,input.in{min-width:0;max-width:100%}
