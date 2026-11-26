@@ -290,13 +290,14 @@ function pocketState(M) {
   const sumIn = () => r2(Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + p.bal, 0));
   // Авто-покрытие: если трата больше кармана, разница сама берётся из «Свободно» (у свободных денег нет назначения).
   // Ошибка остаётся, только если свободных денег не хватило.
-  let free = r2(t.free - Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + Math.max(0, p.bal), 0));   // по-настоящему свободные: минус карманов их не увеличивает
+  // Деньги на счетах = свободные + все карманы (минус кармана — это трата, которая уже ушла со счёта из свободных денег).
+  let free = r2(t.free - sumIn());
   const ordK = ['mandatory', 'saving', 'flexible', 'buffer'];
   for (const p of Object.values(st).filter(p => !p.linkSavings && p.kind !== 'goal' && p.bal < 0).sort((a, b) => ordK.indexOf(a.kind) - ordK.indexOf(b.kind))) {
     if (free <= 0) break;
     const c = r2(Math.min(free, -p.bal)); p.bal = r2(p.bal + c); p.auto = c; free = r2(free - c);
   }
-  const inPockets = r2(Object.values(st).filter(p => !p.linkSavings).reduce((s, p) => s + Math.max(0, p.bal), 0)); void sumIn;
+  const inPockets = sumIn(); free = r2(t.free - inPockets);
   return { st, list: list.map(p => st[p.name]), free, total: t.total, inPockets, savings: t.sav, planTotal: list.reduce((s, p) => s + st[p.name].plan, 0) };
 }
 // Предложение распределения по правилу: обязательные → накопительные → гибкие → буфер до 10% плана. Остаток — в «Свободно» (цели — следующий этап).
