@@ -716,6 +716,9 @@ function debtLinkRow(d) {
   if (!want) return '';
   const fit = debts().filter(x => (want === 'lent') === isLent(x) && (!d.person || !x.person || x.person === d.person));
   if (!fit.length) return '';
+  // Если у этого человека уже есть один открытый долг — выбираем его сам (повторный заём, частичный возврат).
+  // debtId === '' — человек сам выбрал «Новый долг», тогда не трогаем.
+  if (!S.edit && d.debtId === undefined && d.person) { const same = fit.filter(x => x.person === d.person && debtBalance(x) > 0); if (same.length === 1) d.debtId = same[0].id; }
   return `<label class="f">По какому долгу?</label><div class="seg">${fit.map(x => `<button class="chip ${d.debtId === x.id ? 'on' : ''}" data-debtlink="${x.id}">${esc(x.name)}</button>`).join('')}<button class="chip ${!d.debtId ? 'on' : ''}" data-debtlink="">${d.type === 'Заём выдан' || d.type === 'Заём получен' ? '＋ Новый долг' : 'Другое'}</button></div>`;
 }
 
@@ -1043,11 +1046,11 @@ function renderAdd() {
   const showFx = () => { const el = $('#fxRate'); if (!el) return; const a = num($('#amount').value), b2 = num($('#amountTo').value);
     if (a > 0 && b2 > 0 && cTo) { const c1 = isMetal(cFrom) ? 'г' : symFrom, c2 = isMetal(cTo) ? 'г' : (CUR[cTo] || {}).sym; const rr = x => (+x.toFixed(x < 10 ? 4 : 2)).toLocaleString('ru-RU'); el.textContent = b2 >= a ? `Курс: 1 ${c1} = ${rr(b2 / a)} ${c2}` : `Курс: 1 ${c2} = ${rr(a / b2)} ${c1}`; } else el.textContent = ''; };
   if ($('#amountTo')) { $('#amountTo').oninput = showFx; $('#amount').oninput = showFx; showFx(); }
-  document.querySelectorAll('[data-type]').forEach(b => b.onclick = () => { sync(); d.type = b.dataset.type; d.cat = ''; d.sub = ''; renderAdd(); });
-  $('#moreType').onchange = e => { if (!e.target.value) return; sync(); d.type = e.target.value; d.cat = ''; d.sub = ''; renderAdd(); };
+  document.querySelectorAll('[data-type]').forEach(b => b.onclick = () => { sync(); d.type = b.dataset.type; d.cat = ''; d.sub = ''; delete d.debtId; renderAdd(); });
+  $('#moreType').onchange = e => { if (!e.target.value) return; sync(); d.type = e.target.value; d.cat = ''; d.sub = ''; delete d.debtId; renderAdd(); };
   document.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { sync(); d.cat = b.dataset.cat; d.sub = ''; renderAdd(); });
   document.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { sync(); d.sub = b.dataset.sub; renderAdd(); });
-  document.querySelectorAll('[data-person]').forEach(b => b.onclick = () => { sync(); d.person = b.dataset.person; renderAdd(); });
+  document.querySelectorAll('[data-person]').forEach(b => b.onclick = () => { sync(); d.person = b.dataset.person; if (d.debtId) { const x = debts().find(y => y.id === d.debtId); if (x && x.person && x.person !== d.person) delete d.debtId; } renderAdd(); });
   document.querySelectorAll('[data-debtlink]').forEach(b => b.onclick = () => { sync(); d.debtId = b.dataset.debtlink; const x = debts().find(y => y.id === d.debtId); if (x && x.person) d.person = x.person; renderAdd(); });
   document.querySelectorAll('[data-paylink]').forEach(b => b.onclick = () => { sync(); d.payId = b.dataset.paylink; renderAdd(); });
   $('#cancel').onclick = () => { const back = S.edit ? 'history' : (S.backTab || 'overview'); S.draft = null; S.edit = null; S.autoHint = ''; S.backTab = null; setTab(back); };
