@@ -171,7 +171,8 @@ function todayGame(t) {
   const manual = G.gauges.filter(g => g.rules.some(x => x.t === 'manual'));
   const low = gauges.filter(g => r.g[g.id] < 30);
   const lv = levelDayCard(t);
-  return `${lv}<div class="card gcard"><b>Шкалы</b><div class="sub" style="margin-top:2px">${r.active.map(b => `<span class="buff ${b.debuff ? 'de' : ''}" title="${esc(b.text || '')}">${b.icon} ${esc(b.name)}</span>`).join(' ') || 'баффов нет'}</div>
+  void lv;
+  return `<h2 data-sum="⚡ ${r.g.energy}${low.length ? ' · ⚠ ' + low.length : ''}">Шкалы</h2><div class="card gcard"><div class="sub" style="margin-top:0">${r.active.map(b => `<span class="buff ${b.debuff ? 'de' : ''}" title="${esc(b.text || '')}">${b.icon} ${esc(b.name)}</span>`).join(' ') || 'баффов нет'}</div>
     <div class="gauges">${gauges.map(g => `<div class="gauge ${col(r.g[g.id])}" data-tip="${esc(g.name + '|' + r.g[g.id] + ' из 100')}"><span>${g.icon}</span><div class="gbar"><i style="width:${r.g[g.id]}%"></i></div><b>${r.g[g.id]}</b></div>`).join('')}</div>
     ${manual.length ? `<div class="seg" style="margin-top:6px">${manual.map(g => { const rr = g.rules.find(x => x.t === 'manual'); return `<button class="chip" data-gplus="${g.id}">+ ${g.icon} ${esc(rr.label || g.name)}</button>`; }).join('')}</div>` : ''}
     ${low.length ? `<div class="sub" style="margin-top:4px">⚠ Проседает: ${low.map(g => g.icon + ' ' + esc(g.name)).join(', ')}</div>` : ''}

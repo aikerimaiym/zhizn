@@ -819,7 +819,8 @@ function renderOverview() {
     <div class="kpi green"><div class="l">Накопления</div><div class="v">${money(sav)}</div><div class="s">${S.cfg.accounts.some(a => isMetal(accCur(a))) ? 'вкл. металлы' : '&nbsp;'}</div></div>
     <div class="kpi powder"><div class="l">Сальдо месяца</div><div class="v ${saldo < 0 ? 'neg' : ''}">${money(saldo)}</div><div class="s">пришло − потрачено · отложено ${inc + help ? pct(saldo / (inc + help)) : '–'}</div></div>
   </div>
-  <h2>Месяц</h2>
+  <h2 data-sum="${warns.filter(w => w[0] === 'warn').length ? '⚠ ' + warns.filter(w => w[0] === 'warn').length : '✓'}">Внимание</h2>${warns.map(([c, t, go]) => go ? `<div class="${c} go" role="button" tabindex="0" data-go="${esc(go)}">${esc(t)}<span class="goarr">›</span></div>` : `<div class="${c}">${esc(t)}</div>`).join('')}
+  <h2 data-sum="сальдо ${money(saldo)}">Месяц</h2>
   <div class="card">
     <div class="row"><span>Доходы (свои)</span><b class="pos">${money(inc)}</b></div>
     <div class="row"><span>Помощь</span><b>${money(help)}</b></div>
@@ -827,14 +828,13 @@ function renderOverview() {
     ${debts().length || assets().length ? `<div class="row"><span>Чистый капитал <span class="sub">· Бюджет → Капитал</span></span><b>${money(capital().net)}</b></div>` : ''}
     <div class="row"><span class="sub">к прошлому месяцу</span><span class="sub">${prevExp ? (exp >= prevExp ? '+' : '') + pct(exp / prevExp - 1) + ' расходов' : '–'}</span></div>
   </div>
-  <h2>Внимание</h2>${warns.map(([c, t, go]) => go ? `<div class="${c} go" role="button" tabindex="0" data-go="${esc(go)}">${esc(t)}<span class="goarr">›</span></div>` : `<div class="${c}">${esc(t)}</div>`).join('')}
-  <h2>Бюджет по категориям</h2>
+  <h2 data-sum="${money(bud.fact)} из ${money(bud.plan)}">Бюджет по категориям</h2>
   <div class="card">${topCats.length ? topCats.map(catBar).join('') : '<div class="row muted">Пока нет плана и расходов</div>'}</div>
   ${overviewCharts(m)}
-  <h2>Счета</h2>
+  <h2 data-sum="${money(total)}">Счета</h2>
   <div class="card">${S.cfg.accounts.filter(a => !a.closed || r2(b[a.name])).map(a => accRow(a, b[a.name])).join('')}</div>
   ${S.cfg.accounts.some(a => accCur(a) !== baseCur()) ? `<p class="muted">Счета в другой валюте и металлы пересчитаны в ${CUR[baseCur()].sym} по текущему курсу${Rates.data ? ' (' + esc(Rates.data.src) + ', ' + esc(Rates.data.date) + ')' : ''}.</p>` : ''}
-  ${people.length ? `<h2>Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
+  ${people.length ? `<h2 data-sum="${money(people.reduce((a, x) => a + x.v, 0))}">Деньги от людей</h2><div class="card">${people.map(x => `<div class="row"><span>${esc(x.p)}</span><b>${money(x.v)}</b></div>`).join('')}</div>` : ''}`;
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => goTo(el.dataset.go));
   bindOverviewCharts();
   bindMaturity();

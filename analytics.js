@@ -106,12 +106,12 @@ const legend = items => `<div class="vlegend">${items.map(i => `<span><i style="
 const W = 340;
 // Столбики по месяцам (несколько рядов рядом) + необязательная линия. Одна ось — все ряды в тенге.
 function barChart(labels, series, line, opt = {}) {
-  const H = opt.h || 190, L = 44, R = 6, T = 10, B = 24, pw = W - L - R, ph = H - T - B, n = labels.length;
+  const H = opt.h || 160, L = 44, R = 6, T = 10, B = 24, pw = W - L - R, ph = H - T - B, n = labels.length;
   if (!n) return '<div class="muted">Нет данных за период</div>';
   const all = [...series.flatMap(s => s.vals), ...(line ? line.vals : []), 0];
   let max = Math.max(...all), min = Math.min(...all); if (max === min) max = min + 1;
   const pad = (max - min) * 0.08; max += max > 0 ? pad : 0; min -= min < 0 ? pad : 0;
-  const y = v => T + ph - (v - min) / (max - min) * ph, gw = pw / n, bw = Math.max(3, Math.min(18, (gw - 6) / series.length - 2));
+  const y = v => T + ph - (v - min) / (max - min) * ph, gw = pw / n, bw = Math.max(4, Math.min(22, (gw - 6) / series.length - 2));
   const ticks = [min < 0 ? min : 0, (max + Math.max(0, min)) / 2, max].map(v => Math.round(v));
   let g = ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="vgrid"/><text x="${L - 4}" y="${y(v) + 3}" class="vax" text-anchor="end">${kfmt(v)}</text>`).join('');
   g += `<line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" class="vbase"/>`;
@@ -142,7 +142,7 @@ function barChart(labels, series, line, opt = {}) {
 }
 // Линии (одна ось). Точки — на каждом месяце, подсказка по колонке.
 function lineChart(labels, series, opt = {}) {
-  const H = opt.h || 180, L = 44, R = 8, T = 10, B = 24, pw = W - L - R, ph = H - T - B, n = labels.length;
+  const H = opt.h || 150, L = 44, R = 8, T = 10, B = 24, pw = W - L - R, ph = H - T - B, n = labels.length;
   if (!n) return '<div class="muted">Нет данных за период</div>';
   const all = series.flatMap(s => s.vals.filter(v => v !== null));
   let max = Math.max(...all, 0), min = Math.min(...all, 0); if (max === min) max = min + 1;
@@ -153,6 +153,7 @@ function lineChart(labels, series, opt = {}) {
   for (const s of series) {
     const segs = []; let cur = [];
     s.vals.forEach((v, i) => { if (v === null) { if (cur.length) segs.push(cur); cur = []; } else cur.push([x(i), y(v)]); }); if (cur.length) segs.push(cur);
+    if (series.length <= 2) g += segs.map(p => p.length > 1 ? `<path d="M${p[0][0]},${y(Math.max(0, min))}L${p.map(q => q.join(',')).join('L')}L${p[p.length - 1][0]},${y(Math.max(0, min))}Z" fill="${s.color}" fill-opacity="0.12"/>` : '').join('');
     g += segs.map(p => p.length > 1 ? `<polyline points="${p.map(q => q.join(',')).join(' ')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : '').join('');
     g += s.vals.map((v, i) => v === null ? '' : `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.color}" stroke="var(--card)" stroke-width="2"/>`).join('');
   }
@@ -197,11 +198,11 @@ function overviewCharts(M) {
   const items = [...top.map(c => ({ label: c.cat, value: c.fact, color: cc[c.cat] })), ...(rest.length ? [{ label: 'Другое', value: rest.reduce((s, c) => s + c.fact, 0), color: 'var(--cOther)' }] : [])];
   const cur = M, from = mStart(mshift(cur, -5)), bm = byMonth(from < S.cfg.startDate ? mStart(mkey(S.cfg.startDate)) : from, mEnd(cur));
   const ps = pocketState(M), pk = ps.list.filter(p => !p.linkSavings && p.bal > 0);
-  return `<h2>Куда ушли деньги · ${mlabel(M)}</h2><div class="card vcard">${donut(items, 'расходы')}</div>
-  <h2>Доходы и расходы</h2><div class="card vcard">${barChart(bm.map(x => mShort(x.M, bm.length > 1 && bm[0].M.slice(0, 4) !== bm[bm.length - 1].M.slice(0, 4))),
+  return `<h2 data-sum="${money(b.fact)}">Куда ушли деньги · ${mlabel(M)}</h2><div class="card vcard">${donut(items, 'расходы')}</div>
+  <h2 data-sum="6 мес">Доходы и расходы</h2><div class="card vcard">${barChart(bm.map(x => mShort(x.M, bm.length > 1 && bm[0].M.slice(0, 4) !== bm[bm.length - 1].M.slice(0, 4))),
     [{ name: 'Пришло', color: 'var(--c1)', vals: bm.map(x => x.inc + x.help) }, { name: 'Потрачено', color: 'var(--c2)', vals: bm.map(x => x.exp) }], null, { tipTitle: bm.map(x => mlabel(x.M)), aria: 'Доходы и расходы по месяцам' })}</div>
-  ${pk.length ? `<h2>Деньги по карманам</h2><div class="card vcard">${donut(pk.map((p, i) => ({ label: p.label || p.name, value: p.bal, color: i < 7 ? `var(--c${i + 1})` : 'var(--cOther)' })), 'в карманах', ps.free > 0 ? `<div class="vli"><span><i style="background:var(--line)"></i>Свободно (не в кольце)</span><b>${money(ps.free)}</b><span></span></div>` : '')}</div>` : ''}
-  <button class="btn" id="goAnalytics">📊 Подробная аналитика ›</button>`;
+  ${pk.length ? `<h2 data-sum="${money(ps.inPockets)}">Деньги по карманам</h2><div class="card vcard">${donut(pk.map((p, i) => ({ label: p.label || p.name, value: p.bal, color: i < 7 ? `var(--c${i + 1})` : 'var(--cOther)' })), 'в карманах', ps.free > 0 ? `<div class="vli"><span><i style="background:var(--line)"></i>Свободно (не в кольце)</span><b>${money(ps.free)}</b><span></span></div>` : '')}</div>` : ''}
+  <button class="btn light" id="goAnalytics" data-nofold>📊 Подробная аналитика ›</button>`;
 }
 function bindOverviewCharts() { const b = $('#goAnalytics'); if (b) b.onclick = () => setTab('analytics'); }
 

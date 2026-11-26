@@ -1,6 +1,6 @@
 // Работа без интернета: приложение берётся из кэша, данные — из памяти устройства (IndexedDB).
-const CACHE = 'zhizn-v29';
-const FILES = ['./', './index.html', './style.css', './app.js', './analytics.js', './report.js', './life.js', './character.js', './game2.js', './defaults.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+const CACHE = 'zhizn-v30';
+const FILES = ['./', './index.html', './style.css', './app.js', './analytics.js', './report.js', './life.js', './character.js', './game2.js', './ui.js', './defaults.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))));

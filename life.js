@@ -177,7 +177,7 @@ function renderToday() {
   const trackers = `<h2>Трекеры <button class="ghost" id="lifeSet" style="font-size:13px;float:right">⚙ настроить</button></h2><div class="tgrid">${trs.map(trCard).join('') || '<div class="muted">Трекеры выключены — включи в настройках.</div>'}</div>`;
   // деньги
   const mt = moneyToday();
-  const money = `<h2>Деньги на сегодня</h2><div class="card" style="padding:10px 12px">
+  const money = `<h2 data-sum="можно ${money0(mt.left)}">Деньги на сегодня</h2><div class="card" style="padding:10px 12px">
     <div class="mrow"><div><div class="sub">Можно потратить сегодня</div><b class="${mt.left < 0 ? 'neg' : ''}" style="font-size:20px">${money0(mt.left)}</b><div class="sub">${mt.perDay ? `в день ${money0(mt.perDay)} · ${esc(mt.src)} на ${mt.daysLeft} дн.` : 'разложи деньги по гибким карманам — появится дневной лимит'}</div></div>
     <div style="text-align:right"><div class="sub">Потрачено</div><b>${money0(mt.spentToday)}</b></div></div>
     ${mt.pays.map(r => `<div class="${r.due === today() ? 'warn' : 'info'}" style="margin:6px 0 0">📅 ${r.due === today() ? 'Сегодня' : 'Завтра'}: «${esc(r.p.name)}» — ${money0(r.left)}</div>`).join('')}
@@ -187,8 +187,8 @@ function renderToday() {
     ? `<div class="card" style="padding:10px 12px"><div class="mrow"><b>✓ Отчёт за сегодня готов</b><button class="btn small light" id="openReport" style="margin:0">Открыть</button></div></div>`
     : `<div class="card ${h >= 20 ? 'evening' : ''}" style="padding:10px 12px"><b>📝 Вечерний отчёт</b><div class="sub">${h >= 20 ? 'Самое время: как прошёл день?' : 'Можно заполнять в течение дня, отправить — вечером.'}</div><button class="btn small" id="openReport">Заполнить отчёт</button></div>`;
   $('#view').innerHTML = maturityHtml() + `<div class="hello"><div class="sub">${dayTitle(t)}</div><b>${hello}${L.name ? ', ' + esc(L.name) : ''}!</b></div>
-    ${typeof charMini === 'function' ? charMini() : ''}${typeof todayGame === 'function' ? todayGame(t) : ''}
-    <div class="streaks">${chips}</div>${plan}${trackers}${money}<h2>Вечер</h2>${rep}
+    ${typeof charMini === 'function' ? charMini() : ''}${typeof levelDayCard === 'function' ? levelDayCard(t) : ''}
+    <div class="streaks">${chips}</div>${plan}${trackers}<h2 data-sum="${d.done ? '✓ готов' : ''}">Вечер</h2>${rep}${typeof todayGame === 'function' ? todayGame(t) : ''}${money}
     <button class="btn light" id="openDays">📖 Лента дней</button>`;
   bindToday(t);
   if (typeof bindMaturity === 'function') bindMaturity();
